@@ -1,0 +1,125 @@
+#pragma once
+#include <vector>
+#include <string>
+#include <cstdint>
+#include "GameTypes.h"
+
+class EventManager {
+public:
+    static EventManager& getInstance();
+
+    // Initialize Event System
+    bool Init();
+    
+    // Exposed for testing
+    bool LoadScripts();
+    bool LoadDialogues();
+
+    void Instruct_JmpScene(int sceneId, int x, int y); // instruct_71 (Public for testing)
+    void Instruct_GameOver(); // instruct_62
+    int Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5, int e6); // Extended instruction
+
+    // Event Handling
+    // Check if there is an event at (x, y) in sceneId
+    // isManual: true if triggered by Space/Enter, false if triggered by stepping on it
+    void CheckEvent(int sceneId, int x, int y, bool isManual = false);
+    
+    // Check for item-triggered event (DData index 3)
+    void CheckEventWithItem(int sceneId, int x, int y);
+
+    // Check for Auto-Run events (Condition == 0) in the scene
+    void CheckAutoEvents(int sceneId);
+
+    // Execute a specific event script by ID
+    void ExecuteEvent(int eventScriptId);
+
+    // Testing Helper
+    void AddMockScript(int id, const std::vector<int16_t>& script);
+    
+    // Debug Helper: Print event script data
+    void PrintEventScript(int eventScriptId);
+
+    // Queue mechanism to prevent recursive event execution issues
+    void QueueEvent(int scriptId) { m_pendingScriptId = scriptId; }
+    int GetPendingEvent() const { return m_pendingScriptId; }
+    void ClearPendingEvent() { m_pendingScriptId = -1; }
+
+private:
+    int m_pendingScriptId = -1;
+ // 新增：锁死当前执行脚本的场景和事件上下文
+    int m_executingSceneId = -1;
+    int m_executingEventId = -1;
+    EventManager();
+    ~EventManager() = default;
+    EventManager(const EventManager&) = delete;
+    EventManager& operator=(const EventManager&) = delete;
+
+    // Helpers
+    int16_t ReadScriptArg(int& offset);
+
+    void Instruct_Redraw();
+    void Instruct_Dialogue(int talkId, int headId, int mode); // instruct_1
+    void Instruct_AddItem(int itemId, int amount); // instruct_2
+    void Instruct_ModifyEvent(const std::vector<int16_t>& args); // instruct_3
+    int Instruct_Battle(int battleId, int jump1, int jump2, int getExp); // instruct_6
+    void Instruct_PlayMusic(int musicId); // instruct_8
+    void Instruct_JoinParty(int roleId); // instruct_10
+    // 60-67
+    void Instruct_Rest(); // instruct_12 (Also instruct_64 sometimes?)
+    int Instruct_AskRest(int jump1, int jump2); // instruct_11 - Ask for rest
+    int Instruct_CheckMoney(int moneyNeeded, int jump1, int jump2); // instruct_31 - Check money
+    void Instruct_FadeIn(); // instruct_13
+    void Instruct_FadeOut(); // instruct_14
+    void Instruct_LeaveParty(int roleId); // instruct_21
+    void Instruct_SetScene(int sceneId, int x, int y, int dir);
+    void Instruct_19(int x, int y); // Teleport within scene
+    void Instruct_40(int dir); // Set Facing
+    
+    // New Instructions
+    void Instruct_AddAttribute(int roleId, int attrId, int value); // instruct_11
+    void Instruct_PlaySound(int soundId); // instruct_50 / 67
+
+    // New Instructions from KYS Promise
+    void Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int place, int showHead, int color, int frame); // instruct_68
+    void Instruct_ReSetName(int type, int id, int newNameId); // instruct_69
+    void Instruct_ShowTitle(int talkNum, int color); // instruct_70
+    // void Instruct_JmpScene(int sceneId, int x, int y); // instruct_71 (Moved to public)
+    void Instruct_Flash(int color, int time); // instruct_16
+    void Instruct_Delay(int time); // instruct_17
+    
+    // Core DData/SData Modifiers
+    void Instruct_UpdateEvent(int sceneId, int eventId, int index, int value); // Helper for 26, 38
+    void Instruct_26(int sceneId, int eventId, int add1, int add2, int add3); // Modify DData[s, e, 2/3/4] (Wait, etc?)
+    void Instruct_38(int sceneId, int layer, int oldPic, int newPic); // Global Replace SData
+    void Instruct_27(int eventId, int beginPic, int endPic); // Animation (updates DData[e, 5])
+    void Instruct_44(int eventId1, int beginPic1, int endPic1, int eventId2, int beginPic2, int endPic2); // Dual Animation
+    void Instruct_ModifyDData(int sceneId, int eventId, int index, int value); // Generic DData modifier
+    
+    // Movement
+    void Instruct_23(int roleId, int poison);
+    void Instruct_25(int x1, int y1, int x2, int y2); // Pan Camera
+    void Instruct_30(int x1, int y1, int x2, int y2); // Move Main Character
+    void Instruct_Movement(int eventId, int x, int y); // Move Event (Not standard instruction but needed for logic)
+
+    // Helper to read arguments from script
+    // Returns the value and increments offset
+    // int16_t ReadScriptArg(int& offset); // Moved to public
+
+    // Data
+    std::vector<int16_t> m_eventScripts; // kdef.grp (viewed as int16)
+    std::vector<int32_t> m_eventIndices; // kdef.idx
+
+    std::vector<uint8_t> m_talkData; // talk.grp
+    std::vector<int32_t> m_talkIndices; // talk.idx
+    
+    // Name Data
+    std::vector<uint8_t> m_nameData; // name.grp
+    std::vector<int32_t> m_nameIndices; // name.idx
+    
+    // Helper to load name
+    std::string GetNameFromData(int nameNum);
+
+    // Context
+    int m_currentSceneId = -1;
+    int m_currentEventId = -1;
+};
