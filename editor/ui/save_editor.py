@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QFormLayout,
-    QSpinBox, QLineEdit, QPushButton, QComboBox, QTableWidget,
-    QTableWidgetItem, QLabel, QMessageBox, QSplitter, QHeaderView,
+    QSpinBox, QPushButton, QComboBox, QTableWidget,
+    QTableWidgetItem, QLabel, QMessageBox, QHeaderView,
 )
 
 from ui.context import EditorContext
 from ui.magic_editor import MagicEditorPanel
+from ui.role_editor import RoleEditorPanel
+from ui.item_editor import ItemEditorPanel
 
 
 class SaveEditorWidget(QWidget):
@@ -74,33 +74,8 @@ class SaveEditorWidget(QWidget):
         for i, sp in enumerate(self.team_spins):
             sp.setValue(h.team[i] if i < len(h.team) else -1)
 
-        self.role_table.setRowCount(arc.roles.count)
-        for i in range(arc.roles.count):
-            r = arc.roles.records[i]
-            vals = [
-                str(i),
-                arc.role_name(i),
-                str(r[1]),
-                str(r[15]),
-                str(r[17]),
-                str(r[18]),
-                str(r[40]),
-                str(r[41]),
-                str(r[43]),
-                str(r[44]),
-                str(r[45]),
-                str(r[56]) if len(r) > 56 else "0",
-            ]
-            for c, v in enumerate(vals):
-                self.role_table.setItem(i, c, QTableWidgetItem(v))
-
-        self.item_table.setRowCount(arc.items.count)
-        for i in range(arc.items.count):
-            it = arc.items.records[i]
-            vals = [str(i), arc.item_name(i), str(it[41]), str(it[43]), str(it[44]), str(it[42])]
-            for c, v in enumerate(vals):
-                self.item_table.setItem(i, c, QTableWidgetItem(v))
-
+        self.role_editor.refresh()
+        self.item_editor.refresh()
         self.magic_editor.refresh()
 
         inv = arc.header.inventory
@@ -163,101 +138,12 @@ class SaveEditorWidget(QWidget):
         self.ctx.statusMessage.emit("总览已应用到内存（请点保存）")
 
     def _build_roles_tab(self) -> None:
-        w = QWidget()
-        lay = QHBoxLayout(w)
-        self.role_table = QTableWidget(0, 12)
-        self.role_table.setHorizontalHeaderLabels([
-            "ID", "姓名", "HeadNum", "等级", "HP", "MaxHP", "MP", "MaxMP",
-            "攻击", "速度", "防御", "资质",
-        ])
-        self.role_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.role_table.cellChanged.connect(self._role_cell_changed)
-        self.role_table.currentCellChanged.connect(self._role_selected)
-        lay.addWidget(self.role_table, 3)
-        side = QVBoxLayout()
-        self.head_preview = QLabel("头像预览")
-        self.head_preview.setFixedSize(128, 128)
-        self.head_preview.setAlignment(Qt.AlignCenter)
-        self.head_preview.setStyleSheet("background:#222;color:#aaa;")
-        side.addWidget(self.head_preview)
-        side.addStretch()
-        lay.addLayout(side, 1)
-        self.tabs.addTab(w, "角色")
-        self._role_updating = False
-
-    def _role_selected(self, row: int, *_args) -> None:
-        if row < 0 or not self.ctx.ranger or not self.ctx.heads:
-            return
-        try:
-            head = int(self.role_table.item(row, 2).text())
-        except Exception:
-            return
-        self._show_head(head)
-
-    def _show_head(self, head_num: int) -> None:
-        pic = self.ctx.heads
-        if not pic or head_num < 0 or head_num >= pic.count:
-            self.head_preview.setText("无图")
-            return
-        try:
-            img = pic.frames[head_num].to_image()
-            if img is None:
-                self.head_preview.setText("空帧")
-                return
-            data = img.tobytes("raw", "RGBA")
-            qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888).copy()
-            self.head_preview.setPixmap(QPixmap.fromImage(qimg).scaled(
-                120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        except Exception as e:
-            self.head_preview.setText(str(e))
-
-    def _role_cell_changed(self, row: int, col: int) -> None:
-        if self._role_updating or not self.ctx.ranger:
-            return
-        arc = self.ctx.ranger
-        item = self.role_table.item(row, col)
-        if not item or row >= arc.roles.count:
-            return
-        text = item.text()
-        field_map = {2: 1, 3: 15, 4: 17, 5: 18, 6: 40, 7: 41, 8: 43, 9: 44, 10: 45, 11: 56}
-        try:
-            if col == 1:
-                arc.roles.set_name(row, text, 4, 5)
-            elif col in field_map:
-                arc.roles.set(row, field_map[col], int(text))
-                if col == 2:
-                    self._show_head(int(text))
-        except ValueError:
-            pass
+        self.role_editor = RoleEditorPanel(self.ctx)
+        self.tabs.addTab(self.role_editor, "人物")
 
     def _build_items_tab(self) -> None:
-        self.item_table = QTableWidget(0, 6)
-        self.item_table.setHorizontalHeaderLabels(["ID", "名称", "类型", "价格", "EventNum", "数量库存"])
-        self.item_table.cellChanged.connect(self._item_cell_changed)
-        self.tabs.addTab(self.item_table, "物品定义")
-        self._item_updating = False
-
-    def _item_cell_changed(self, row: int, col: int) -> None:
-        if not self.ctx.ranger:
-            return
-        arc = self.ctx.ranger
-        item = self.item_table.item(row, col)
-        if not item:
-            return
-        text = item.text()
-        try:
-            if col == 1:
-                arc.items.set_name(row, text, 1, 10)
-            elif col == 2:
-                arc.items.set(row, 41, int(text))
-            elif col == 3:
-                arc.items.set(row, 43, int(text))
-            elif col == 4:
-                arc.items.set(row, 44, int(text))
-            elif col == 5:
-                arc.items.set(row, 42, int(text))
-        except ValueError:
-            pass
+        self.item_editor = ItemEditorPanel(self.ctx)
+        self.tabs.addTab(self.item_editor, "物品定义")
 
     def _build_magics_tab(self) -> None:
         self.magic_editor = MagicEditorPanel(self.ctx)
