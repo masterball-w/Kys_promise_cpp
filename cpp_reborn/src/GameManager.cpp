@@ -968,89 +968,6 @@ bool GameManager::LoadGame(int slot) {
     return true;
 }
 
-void GameManager::InitNewGame() {
-    // KYS New Game: Load initial state from ranger.grp
-    // User feedback indicates that ranger.grp acts as the "New Game Save".
-    
-    std::string loadPath = m_savePath;
-    if (loadPath.empty()) {
-        loadPath = "save/"; // Fallback
-    }
-    
-    std::string preservedHeroNameGbk;
-    if (!m_characterCreationNameUtf8.empty()) {
-        preservedHeroNameGbk = TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8);
-    } else if (getRoleCount() > 0) {
-        preservedHeroNameGbk = getRole(0).getName();
-    }
-
-    // Reload data (including Header which sets Scene/Pos)
-    loadData(loadPath);
-
-    if (!preservedHeroNameGbk.empty() && getRoleCount() > 0) {
-        getRole(0).setName(preservedHeroNameGbk);
-    }
-    
-    // OVERRIDE for New Game: Force start in Scene 0 (Temple)
-    // 修正：新游戏强制从场景0（圣堂）开始
-    // ranger.grp 的头部可能保存的是大地图状态(-1)，这对新游戏是不正确的。
-    // 实际的开场剧情由场景0的事件101处理。
-    m_currentSceneId = 0; 
-    
-    // Updated based on user feedback: Correct start position in Scene 0 is (38, 38)
-    m_mainMapX = 38;
-    m_mainMapY = 38;
-    
-    // Set default world map position for when player exits the initial scene
-    // This position should be near the entrance of Scene 0 (Temple) on the world map.
-    // Based on typical KYS map, Temple is around (228, 228) or similar.
-    // However, if we don't know, we can look it up from Scene 0 data.
-    if (SceneManager::getInstance().GetSceneCount() > 0) {
-        Scene* scene0 = SceneManager::getInstance().GetScene(0);
-        if (scene0) {
-            m_savedWorldX = scene0->getMainEntranceX1();
-            m_savedWorldY = scene0->getMainEntranceY1();
-            std::cout << "[InitNewGame] Scene 0 entrance: (" << m_savedWorldX << "," << m_savedWorldY << ")" << std::endl;
-        }
-    }
-    // Fallback if 0
-    if (m_savedWorldX == 0 && m_savedWorldY == 0) {
-        m_savedWorldX = 194; // Approximate
-        m_savedWorldY = 267;
-    }
-    
-    m_subMapFace = 0;
-    m_mainMapFace = 0;
-    
-    SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
-    
-    // Sync Camera to Player
-    setMainMapPosition(m_mainMapX, m_mainMapY);
-    
-    // Reset Inventory if not loaded from ranger.grp (Header doesn't contain items, but item array does)
-    // Actually, loadData reloads m_items.
-    // But does m_items contain the *amount*?
-    // In KYS, RItem array usually contains item definitions + amount? 
-    // Wait, KYS original RItem has 'Number' field?
-    // Let's assume loadData handles it.
-    
-    // Initial Event Check to trigger opening cutscene (Auto-Run)
-    // For New Game, we explicitly trigger Event 101 (Opening)
-    // This is critical because ranger.grp might place us on World Map (-1) without active events.
-    std::cout << "[InitNewGame] Triggering Opening Event 101..." << std::endl;
-    EventManager::getInstance().ExecuteEvent(101);
-    
-    // Also check for auto-events in the current scene (just in case)
-   // EventManager::getInstance().CheckAutoEvents(m_currentSceneId);
-    
-    // Debug: Print initial position
-    std::cout << "[InitNewGame] Scene: " << m_currentSceneId << " Pos: (" << m_mainMapX << ", " << m_mainMapY << ")" << std::endl;
-    
-    // Debug: Check Tile at position
-    int16_t tile = SceneManager::getInstance().GetSceneTile(m_currentSceneId, 0, m_mainMapX, m_mainMapY);
-    std::cout << "[InitNewGame] Tile at (" << m_mainMapX << ", " << m_mainMapY << ") Layer 0: " << tile << std::endl;
-}
-
 // ==========================================
 // Logic Helpers Implementation
 // ==========================================
@@ -1087,22 +1004,176 @@ void GameManager::LearnMagic(int roleIdx, int magicIdx, int mode) {
 
 
 void GameManager::RandomizeRoleStats(Role& role) {
-    // Simple randomization for testing
+    // Align Pascal ShowRandomAttribute(True)
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(20, 30);
-    std::uniform_int_distribution<> hp_dis(50, 100);
+    auto ri = [&](int lo, int hi) {
+        return std::uniform_int_distribution<int>(lo, hi)(gen);
+    };
 
-    role.setMaxHP(hp_dis(gen));
+    role.setMaxHP(51 + ri(0, 49));
     role.setCurrentHP(role.getMaxHP());
-    role.setMaxMP(hp_dis(gen));
+    role.setMaxMP(51 + ri(0, 49));
     role.setCurrentMP(role.getMaxMP());
+    role.setMPType(static_cast<int16_t>(ri(0, 1)));
+    role.setIncLife(static_cast<int16_t>(1 + ri(0, 9)));
 
-    role.setAttack(dis(gen));
-    role.setDefence(dis(gen));
-    role.setSpeed(dis(gen));
-    role.setMedcine(dis(gen));
-    role.setFist(dis(gen));
+    role.setAttack(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setSpeed(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setDefence(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setMedcine(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setUsePoi(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setMedPoi(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setFist(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setSword(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setKnife(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setUnusual(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setHidWeapon(static_cast<int16_t>(25 + ri(0, 5)));
+    role.setAptitude(static_cast<int16_t>(1 + ri(0, 99)));
+}
+
+void GameManager::PlayNewGameIntro() {
+    // Pascal InitialRole → PlayBeginningMovie(26, 0); StartAmi;
+    // Flush the Enter/Y that confirmed attribute roll so movie/titles are not skipped.
+    InputManager::getInstance().FlushEvents();
+
+    UIManager::getInstance().PlayBeginningMovie(26, 0);
+
+    EventManager::getInstance().Instruct_FadeOut();
+    UIManager::getInstance().DrawFilledRect(0, 0, 640, 480, 0x000000FF, 255);
+    UIManager::getInstance().UpdateScreen();
+    // ShowTitle waits for key internally (Pascal ShowTitle)
+    EventManager::getInstance().Instruct_ShowTitle(4545, 28515);
+
+    UIManager::getInstance().DrawFilledRect(0, 0, 640, 480, 0x000000FF, 255);
+    UIManager::getInstance().UpdateScreen();
+    EventManager::getInstance().Instruct_ShowTitle(4546, 28515);
+    EventManager::getInstance().Instruct_FadeOut();
+}
+
+void GameManager::InitNewGame() {
+    // Align Pascal: InitialRole (movie+StartAmi) → CurScene/music → WalkInScene(1)
+    std::string loadPath = m_savePath;
+    if (loadPath.empty()) {
+        loadPath = "save/";
+    }
+    
+    std::string preservedHeroNameGbk;
+    if (!m_characterCreationNameUtf8.empty()) {
+        preservedHeroNameGbk = TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8);
+    } else if (getRoleCount() > 0) {
+        preservedHeroNameGbk = getRole(0).getName();
+    }
+
+    Role rolledSnapshot;
+    bool haveRoll = getRoleCount() > 0;
+    if (haveRoll) {
+        rolledSnapshot = getRole(0);
+    }
+
+    loadData(loadPath);
+
+    if (getRoleCount() > 0) {
+        if (haveRoll) {
+            Role& hero = getRole(0);
+            hero.setMaxHP(rolledSnapshot.getMaxHP());
+            hero.setCurrentHP(rolledSnapshot.getCurrentHP());
+            hero.setMaxMP(rolledSnapshot.getMaxMP());
+            hero.setCurrentMP(rolledSnapshot.getCurrentMP());
+            hero.setMPType(rolledSnapshot.getMPType());
+            hero.setIncLife(rolledSnapshot.getIncLife());
+            hero.setAttack(rolledSnapshot.getAttack());
+            hero.setSpeed(rolledSnapshot.getSpeed());
+            hero.setDefence(rolledSnapshot.getDefence());
+            hero.setMedcine(rolledSnapshot.getMedcine());
+            hero.setUsePoi(rolledSnapshot.getUsePoi());
+            hero.setMedPoi(rolledSnapshot.getMedPoi());
+            hero.setFist(rolledSnapshot.getFist());
+            hero.setSword(rolledSnapshot.getSword());
+            hero.setKnife(rolledSnapshot.getKnife());
+            hero.setUnusual(rolledSnapshot.getUnusual());
+            hero.setHidWeapon(rolledSnapshot.getHidWeapon());
+            hero.setAptitude(rolledSnapshot.getAptitude());
+        }
+        if (!preservedHeroNameGbk.empty()) {
+            getRole(0).setName(preservedHeroNameGbk);
+        }
+    }
+
+    // Pascal InitialRole: PlayBeginningMovie(26,0) + StartAmi (before WalkInScene)
+    PlayNewGameIntro();
+
+    // Pascal Start: showmr := False; CurScene := BEGIN_Scene; playmp3(ExitMusic)
+    m_showMR = false;
+    m_currentSceneId = 0; // BEGIN_Scene
+    m_mainMapX = 40;      // BEGIN_Sx
+    m_mainMapY = 38;      // BEGIN_Sy
+    m_subMapFace = 0;
+    m_mainMapFace = 0;
+    m_walkFrame = 0;
+
+    if (SceneManager::getInstance().GetSceneCount() > 0) {
+        Scene* scene0 = SceneManager::getInstance().GetScene(0);
+        if (scene0) {
+            m_savedWorldX = scene0->getMainEntranceX1();
+            m_savedWorldY = scene0->getMainEntranceY1();
+        }
+    }
+    if (m_savedWorldX == 0 && m_savedWorldY == 0) {
+        m_savedWorldX = 194;
+        m_savedWorldY = 267;
+    }
+
+    SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
+    setMainMapPosition(m_mainMapX, m_mainMapY);
+
+    Scene* cur = SceneManager::getInstance().GetScene(m_currentSceneId);
+    if (cur) {
+        SoundManager::getInstance().StopMusic();
+        // Pascal: playmp3(RScene[CurScene].ExitMusic, -1)
+        int music = cur->getExitMusic();
+        if (music < 0) music = cur->getEntranceMusic();
+        if (music >= 0) SoundManager::getInstance().PlayMusic(music);
+    }
+
+    // WalkInScene(Open=1): DrawScene → CallEvent(BEGIN_EVENT=101) → ShowSceneName → CheckEvent3
+    if (m_screenSurface) {
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+    }
+    SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
+    if (m_screenSurface) RenderScreenTo(m_renderer);
+    SDL_RenderPresent(m_renderer);
+
+    InputManager::getInstance().FlushEvents();
+    std::cout << "[InitNewGame] Triggering Opening Event 101..." << std::endl;
+    EventManager::getInstance().SetExecutionContext(m_currentSceneId, 101);
+    EventManager::getInstance().ExecuteEvent(101);
+    EventManager::getInstance().SetExecutionContext(m_currentSceneId, -1);
+
+    if (m_screenSurface) {
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+    }
+    SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
+    if (m_screenSurface) RenderScreenTo(m_renderer);
+    SDL_RenderPresent(m_renderer);
+    UIManager::getInstance().ShowSceneName(m_currentSceneId);
+
+    // Pascal CheckEvent3: walk-on script at current tile
+    {
+        int16_t ev = SceneManager::getInstance().GetSceneTile(m_currentSceneId, 3, m_mainMapX, m_mainMapY);
+        if (ev >= 0) {
+            int16_t scriptId = SceneManager::getInstance().GetEventData(m_currentSceneId, ev, 4);
+            if (scriptId > 0) {
+                EventManager::getInstance().SetExecutionContext(m_currentSceneId, ev);
+                EventManager::getInstance().ExecuteEvent(scriptId);
+                EventManager::getInstance().SetExecutionContext(m_currentSceneId, -1);
+            }
+        }
+    }
+
+    std::cout << "[InitNewGame] Scene: " << m_currentSceneId
+              << " Pos: (" << m_mainMapX << ", " << m_mainMapY << ")"
+              << " ShowMR=" << m_showMR << std::endl;
 }
 
 void GameManager::Run() {
@@ -1185,12 +1256,11 @@ void GameManager::UpdateTitleScreen() {
                 case SDLK_SPACE:
                     if (m_titleMenuSelection == 0) {// 新游戏
                         m_currentState = GameState::CharacterCreation;
-                        //RandomizeRoleStats(getRole(0));
-                        //m_characterCreationNameUtf8 = TextManager::getInstance().nameToUtf8(getRole(0).getName());
-                        //if (m_characterCreationNameUtf8.empty()) {
-                            m_characterCreationNameUtf8 = "金先生";
-                       // }
-                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                        m_charCreatePhase = CharCreatePhase::NameInput;
+                        m_characterCreationNameUtf8 = "金先生";
+                        if (getRoleCount() > 0) {
+                            getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                        }
                         SDL_StartTextInput(m_window);
                         m_characterCreationTextInputActive = true;
                     } else if (m_titleMenuSelection == 1) {
@@ -1238,7 +1308,6 @@ void GameManager::DrawTitleMenu() {
 }
 
 void GameManager::UpdateCharacterCreation() {
-
     SDL_Event e;
     while (SDL_PollEvent(&e) != 0) {
         if (e.type == SDL_EVENT_QUIT) {
@@ -1248,37 +1317,72 @@ void GameManager::UpdateCharacterCreation() {
                 m_characterCreationTextInputActive = false;
             }
         } else if (e.type == SDL_EVENT_KEY_DOWN) {
-            if (e.key.key == SDLK_R || e.key.key == SDLK_SPACE) {
-                RandomizeRoleStats(getRole(0));
-            } else if (e.key.key == SDLK_BACKSPACE) {
-                PopBackUtf8(m_characterCreationNameUtf8);
-                getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
-            } else if (e.key.key == SDLK_Y || e.key.key == SDLK_RETURN) {
-                if (m_characterCreationTextInputActive) {
-                    SDL_StopTextInput(m_window);
-                    m_characterCreationTextInputActive = false;
+            if (m_charCreatePhase == CharCreatePhase::NameInput) {
+                if (e.key.key == SDLK_BACKSPACE) {
+                    PopBackUtf8(m_characterCreationNameUtf8);
+                    if (getRoleCount() > 0) {
+                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                    }
+                } else if (e.key.key == SDLK_RETURN) {
+                    // Confirm name → attribute roll phase (Pascal: EnterString then RandomAttribute)
+                    if (m_characterCreationTextInputActive) {
+                        SDL_StopTextInput(m_window);
+                        m_characterCreationTextInputActive = false;
+                    }
+                    if (m_characterCreationNameUtf8.empty()) {
+                        m_characterCreationNameUtf8 = "金先生";
+                    } else if (getGameTime() == 0) {
+                        // Pascal: if gametime=0 then Name := '金' + Name
+                        std::string gbk = TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8);
+                        if (gbk.size() < 2 || (uint8_t)gbk[0] != 0xBD || (uint8_t)gbk[1] != 0xF0) {
+                            // 金 in GBK is 0xBD 0xF0
+                            m_characterCreationNameUtf8 = std::string("金") + m_characterCreationNameUtf8;
+                        }
+                    }
+                    if (getRoleCount() > 0) {
+                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                        RandomizeRoleStats(getRole(0));
+                    }
+                    m_charCreatePhase = CharCreatePhase::AttributeSelect;
+                } else if (e.key.key == SDLK_ESCAPE) {
+                    if (m_characterCreationTextInputActive) {
+                        SDL_StopTextInput(m_window);
+                        m_characterCreationTextInputActive = false;
+                    }
+                    m_currentState = GameState::TitleScreen;
                 }
-                getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
-                InitNewGame();
-                m_currentState = GameState::Roaming;
-            } else if (e.key.key == SDLK_ESCAPE) {
-                if (m_characterCreationTextInputActive) {
-                    SDL_StopTextInput(m_window);
-                    m_characterCreationTextInputActive = false;
+            } else { // AttributeSelect
+                // Pascal RandomAttribute: Y/Return confirm; Esc cancel; any other key re-roll
+                if (e.key.key == SDLK_Y || e.key.key == SDLK_RETURN) {
+                    if (getRoleCount() > 0) {
+                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                    }
+                    InitNewGame();
+                    m_currentState = GameState::Roaming;
+                    // Do not redraw character-creation UI over the opening scene/event.
+                    return;
+                } else if (e.key.key == SDLK_ESCAPE) {
+                    m_currentState = GameState::TitleScreen;
+                } else {
+                    if (getRoleCount() > 0) RandomizeRoleStats(getRole(0));
                 }
-                m_currentState = GameState::TitleScreen;
             }
-        } else if (e.type == SDL_EVENT_TEXT_INPUT) {
+        } else if (e.type == SDL_EVENT_TEXT_INPUT && m_charCreatePhase == CharCreatePhase::NameInput) {
             std::string appended = m_characterCreationNameUtf8;
             appended += e.text.text;
             std::string gbk = TextManager::getInstance().utf8ToGbk(appended);
             if (!gbk.empty() && gbk.size() <= 9) {
                 m_characterCreationNameUtf8 = std::move(appended);
-                getRole(0).setName(gbk);
+                if (getRoleCount() > 0) getRole(0).setName(gbk);
             }
         }
     }
-    UIManager::getInstance().ShowCharacterCreation(getRole(0));
+
+    if (m_charCreatePhase == CharCreatePhase::NameInput) {
+        UIManager::getInstance().DrawCharacterCreationNamePrompt(m_characterCreationNameUtf8);
+    } else if (getRoleCount() > 0) {
+        UIManager::getInstance().DrawCharacterCreationAttributes(getRole(0));
+    }
     SDL_RenderPresent(m_renderer);
 }
 

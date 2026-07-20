@@ -37,6 +37,8 @@
 │   ├── CMakeLists.txt
 │   └── CMakePresets.json  # binaryDir → 仓库根 build/
 ├── build/               # 唯一构建输出（gitignore；勿使用 cpp_reborn/build）
+├── game_data/           # 本地原版资源存放点（gitignore；勿只放在 build/ 下）
+├── scripts/             # 辅助脚本（如 link_game_data.ps1）
 ├── SDL3-3.4.0/          # 预置 SDL3（Windows 开发便利）
 ├── SDL3_image-3.2.6/
 ├── SDL3_ttf-3.1.0/
@@ -82,28 +84,43 @@ build/Debug/kys_cpp.exe
 
 构建脚本会尝试将 `SDL3.dll`、`SDL3_image.dll`、`SDL3_ttf.dll` 复制到可执行文件目录。
 
+**重要：** 原版 `resource/` / `save/` / `fight/` 等资源请放在仓库根目录 `game_data/`，再用脚本链到运行目录。不要只放在 `build/` 里——清理构建目录会删掉它们。
+
+```powershell
+# 首次：把合法取得的资源拷到 game_data/{resource,save,fight,eft,list,music,sound}
+# 然后：
+powershell -ExecutionPolicy Bypass -File scripts/link_game_data.ps1 -Config Debug
+```
+
 ---
 
 ## 运行所需资源
 
-引擎会在可执行文件附近自动查找以 `smp` 为标志的 `resource/` 目录。推荐将资源放在：
+引擎会在可执行文件附近自动查找以 `smp` 为标志的 `resource/` 目录。推荐布局：
 
 ```text
-build/Debug/
+game_data/                 # 稳定存放（gitignore）
+├── resource/
+├── save/
+├── fight/
+├── eft/
+├── list/
+├── music/
+└── sound/
+
+build/Debug/               # 运行目录（junction 指向 game_data）
 ├── kys_cpp.exe
-├── SDL3.dll
-├── SDL3_image.dll
-├── SDL3_ttf.dll
-├── resource/          # 必需：原版 resource 目录
-├── save/              # 必需：初始数据与存档
-├── fight/             # 必需：战斗人物动画
-├── eft/               # 必需：武功特效
-├── list/              # 建议：升级/套装等表
-├── music/             # 可选：背景音乐
-└── sound/             # 可选：音效
+├── SDL3.dll / SDL3_image.dll / SDL3_ttf.dll
+├── resource/  -> game_data/resource
+├── save/      -> game_data/save
+├── fight/     -> game_data/fight
+├── eft/       -> game_data/eft
+├── list/      -> game_data/list
+├── music/     -> game_data/music
+└── sound/     -> game_data/sound
 ```
 
-也可从合法原版游戏目录整体拷贝上述文件夹到运行目录。
+也可从合法原版游戏目录整体拷贝上述文件夹到 `game_data/`，再执行 `scripts/link_game_data.ps1`。
 
 ### 1. `resource/`（核心，缺少则无法正常启动）
 

@@ -2897,15 +2897,33 @@ void UIManager::ShowItem(int menuSelection, int selectedIndex, bool inSubmenu) {
 
 // Stubs for missing implementations
 void UIManager::PlayTitleAnimation() {
+    PlayBeginningMovie(0, -1);
+
+    // 动画播放完后，加载 Background.Pic 的 Index 0 作为开始菜单背景
+    if (m_texBeginBackground) {
+        SDL_DestroyTexture(m_texBeginBackground);
+        m_texBeginBackground = nullptr;
+    }
+    
+    PicImage bgPic = PicLoader::loadPic("resource/Background.Pic", 0);
+    if (bgPic.surface) {
+        m_texBeginBackground = SDL_CreateTextureFromSurface(m_renderer, bgPic.surface);
+        PicLoader::freePic(bgPic);
+    }
+}
+
+void UIManager::PlayBeginningMovie(int beginNum, int endNum) {
     int frameCount = PicLoader::getPicCount("resource/Begin.Pic");
     if (frameCount <= 0) return;
 
+    if (beginNum < 0) beginNum = frameCount - 1;
+    if (endNum < 0) endNum = frameCount - 1;
+    if (beginNum > frameCount - 1) beginNum = frameCount - 1;
+    if (endNum > frameCount - 1) endNum = frameCount - 1;
+
     bool skip = false;
     SDL_Event event;
-
-    // 播放开场动画 (Begin.Pic)
-    for (int i = 0; i < frameCount && !skip; ++i) {
-        // 检测跳过输入
+    auto playFrame = [&](int i) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 skip = true;
@@ -2918,37 +2936,44 @@ void UIManager::PlayTitleAnimation() {
                 }
             }
         }
-
+        if (skip) return;
         PicImage pic = PicLoader::loadPic("resource/Begin.Pic", i);
         if (pic.surface) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, pic.surface);
             if (tex) {
                 SDL_RenderClear(m_renderer);
-                
-                // 模拟 Pascal 的 ZoomPic 逻辑，拉伸至全屏
-                int w, h;
-                SDL_GetWindowSize(m_window, &w, &h);
-                SDL_FRect dest = { 0.0f, 0.0f, (float)w, (float)h };
+                SDL_FRect dest = { 0.0f, 0.0f, 640.0f, 480.0f };
                 SDL_RenderTexture(m_renderer, tex, NULL, &dest);
-                
                 SDL_RenderPresent(m_renderer);
                 SDL_DestroyTexture(tex);
             }
             PicLoader::freePic(pic);
         }
-        SDL_Delay(40); // 同步 Pascal 的 sdl_delay(20)
-    }
+        SDL_Delay(endNum >= beginNum ? 40 : 16);
+    };
 
-    // 动画播放完后，加载 Background.Pic 的 Index 1 作为开始菜单背景
-    if (m_texBeginBackground) {
-        SDL_DestroyTexture(m_texBeginBackground);
+    if (endNum >= beginNum) {
+        for (int i = beginNum; i <= endNum && !skip; ++i) playFrame(i);
+    } else {
+        for (int i = beginNum; i >= endNum && !skip; --i) playFrame(i);
     }
-    
-    PicImage bgPic = PicLoader::loadPic("resource/Background.Pic", 0);
-    if (bgPic.surface) {
-        m_texBeginBackground = SDL_CreateTextureFromSurface(m_renderer, bgPic.surface);
-        PicLoader::freePic(bgPic);
-    }
+}
+
+void UIManager::DrawCharacterCreationNamePrompt(const std::string& nameUtf8) {
+    if (m_texBeginBackground) DrawTitleBackground();
+    DrawRectangle(100, 100, 440, 200, 0, 0xFFFFFFFF, 200);
+    DrawShadowTextUtf8(" 請輸入主角姓名", 120, 120, 0xFFFF00FF, 0x000000FF);
+    DrawShadowTextUtf8(" Enter 確認　Backspace 刪除　Esc 返回", 120, 160, 0xCCCCCCCC, 0x000000FF);
+    DrawShadowTextUtf8(nameUtf8.empty() ? " " : nameUtf8, 200, 210, 0xFFFFFFFF, 0x000000FF);
+}
+
+void UIManager::DrawCharacterCreationAttributes(const Role& role) {
+    (void)role;
+    // Reuse status panel layout; tip bar at bottom (Pascal ShowRandomAttribute)
+    ShowStatus(0);
+    DrawShadowTextUtf8(" 資質", 30, 380, 0x21FFFFFF, 0x23FFFFFF);
+    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().getRole(0).getAptitude()), 150, 380, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 選定屬性後按回車，任意鍵重骰，Esc 返回", 210, 380, 0x05FFFFFF, 0x07FFFFFF);
 }
 
 void UIManager::DrawTitleScreen() {
@@ -3493,7 +3518,170 @@ void UIManager::ShowDialogue(const std::string& text, int headId, int mode, cons
 }
 
 void UIManager::ShowTitle(const std::string& text, int x, int y, uint32_t color1, uint32_t color2) {
-    DrawShadowText(text, x, y, color1, color2, 40);
+    // Align Pascal ShowTitle (StartAmi uses where=3):
+    // box (0,60,640,109) alpha 40, cell=25, CHINESE_FONT_SIZE=20, ** = newline, @@ = wait key.
+    InputManager::getInstance().FlushEvents();
+
+    const int boxX = 0;
+    const int boxY = (y >= 0) ? y : 60;
+    const int boxW = 640;
+    const int baseBoxH = 109;
+    const int fontSize = 20;
+    const int cell = 25;
+    const int wrapWidth = cell * fontSize; // 500px ≈ 25 Chinese glyphs
+    const int lineH = fontSize;
+
+    auto utf8Len = [](const std::string& s) -> size_t {
+        size_t n = 0;
+        for (size_t i = 0; i < s.size(); ) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if ((c & 0x80) == 0) i += 1;
+            else if ((c & 0xE0) == 0xC0) i += 2;
+            else if ((c & 0xF0) == 0xE0) i += 3;
+            else i += 4;
+            ++n;
+        }
+        return n;
+    };
+
+    // Normalize control sequences in UTF-8 text produced by talkToUtf8
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ) {
+        if (i + 1 < text.size() && text[i] == '*' && text[i + 1] == '*') {
+            normalized.push_back('\n');
+            i += 2;
+            continue;
+        }
+        if (i + 1 < text.size() && text[i] == '@' && text[i + 1] == '@') {
+            normalized.append("\n@@\n");
+            i += 2;
+            continue;
+        }
+        // $$ / %% / && — leave a space (name placeholders; StartAmi titles rarely need them)
+        if (i + 1 < text.size() &&
+            ((text[i] == '$' && text[i + 1] == '$') ||
+             (text[i] == '%' && text[i + 1] == '%') ||
+             (text[i] == '&' && text[i + 1] == '&'))) {
+            normalized.push_back(' ');
+            i += 2;
+            continue;
+        }
+        normalized.push_back(text[i]);
+        ++i;
+    }
+
+    std::string display = TextManager::getInstance().traditionalToSimplified(normalized);
+
+    // Split into pages on @@; within a page wrap by cell width.
+    std::vector<std::string> pages;
+    {
+        std::string cur;
+        size_t i = 0;
+        while (i < display.size()) {
+            if (i + 1 < display.size() && display[i] == '@' && display[i + 1] == '@') {
+                pages.push_back(cur);
+                cur.clear();
+                i += 2;
+                while (i < display.size() && (display[i] == '\n' || display[i] == '\r')) ++i;
+                continue;
+            }
+            cur.push_back(display[i]);
+            ++i;
+        }
+        pages.push_back(cur);
+    }
+    if (pages.empty()) pages.push_back(std::string());
+
+    color1 = ResolveTextColor(color1);
+    color2 = ResolveTextColor(color2);
+    SDL_Color c2 = { (Uint8)((color2 >> 24) & 0xFF), (Uint8)((color2 >> 16) & 0xFF),
+                     (Uint8)((color2 >> 8) & 0xFF), (Uint8)(color2 & 0xFF) };
+    SDL_Color c1 = { (Uint8)((color1 >> 24) & 0xFF), (Uint8)((color1 >> 16) & 0xFF),
+                     (Uint8)((color1 >> 8) & 0xFF), (Uint8)(color1 & 0xFF) };
+
+    TTF_Font* useFont = m_font;
+    if (!useFont) return;
+
+    auto renderPage = [&](const std::string& pageText) {
+        // Black full-screen (Pascal where=3)
+        SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(m_renderer);
+
+        std::string body = pageText;
+        while (!body.empty() && (body.back() == '\n' || body.back() == '\r' || body.back() == ' ')) body.pop_back();
+
+        // Estimate lines for box height growth (Pascal extends box as rows increase)
+        int approxLines = 1;
+        {
+            size_t glyphs = 0;
+            int lines = 1;
+            for (size_t i = 0; i < body.size(); ) {
+                if (body[i] == '\n') {
+                    ++lines;
+                    glyphs = 0;
+                    ++i;
+                    continue;
+                }
+                unsigned char c = static_cast<unsigned char>(body[i]);
+                if ((c & 0x80) == 0) i += 1;
+                else if ((c & 0xE0) == 0xC0) i += 2;
+                else if ((c & 0xF0) == 0xE0) i += 3;
+                else i += 4;
+                ++glyphs;
+                if (glyphs >= static_cast<size_t>(cell)) {
+                    glyphs = 0;
+                    ++lines;
+                }
+            }
+            approxLines = std::max(1, lines);
+        }
+        int boxH = std::max(baseBoxH, approxLines * lineH + 24);
+        if (boxY + boxH > 480) boxH = 480 - boxY;
+
+        // Pascal DrawRectangleWithoutFrame(..., 0, 40) — black fill ~alpha 40/100
+        DrawFilledRect(boxX, boxY, boxW, boxH, 0x000000FF, 102);
+
+        if (!body.empty()) {
+            // Center horizontally within 640 like Pascal x1 ≈ 300 - len*5
+            size_t glyphCount = utf8Len(body);
+            int textX = (glyphCount > static_cast<size_t>(cell * 2))
+                ? (300 - cell * 10)
+                : (300 - static_cast<int>(glyphCount) * 5);
+            if (textX < 20) textX = 20;
+            if (x >= 0) textX = x;
+
+            int textY = boxY + (boxH / 2) - std::min(approxLines, 5) * (lineH / 2);
+            if (textY < boxY + 8) textY = boxY + 8;
+            if (y >= 0 && x >= 0) textY = y;
+
+            SDL_Surface* surf2 = TTF_RenderText_Blended_Wrapped(useFont, body.c_str(), 0, c2, wrapWidth);
+            if (surf2) {
+                SDL_Texture* tex2 = SDL_CreateTextureFromSurface(m_renderer, surf2);
+                SDL_FRect dst2 = { (float)(textX + 1), (float)textY, (float)surf2->w, (float)surf2->h };
+                SDL_RenderTexture(m_renderer, tex2, NULL, &dst2);
+                SDL_DestroyTexture(tex2);
+                SDL_DestroySurface(surf2);
+            }
+            SDL_Surface* surf1 = TTF_RenderText_Blended_Wrapped(useFont, body.c_str(), 0, c1, wrapWidth);
+            if (surf1) {
+                SDL_Texture* tex1 = SDL_CreateTextureFromSurface(m_renderer, surf1);
+                SDL_FRect dst1 = { (float)textX, (float)textY, (float)surf1->w, (float)surf1->h };
+                SDL_RenderTexture(m_renderer, tex1, NULL, &dst1);
+                SDL_DestroyTexture(tex1);
+                SDL_DestroySurface(surf1);
+            }
+        }
+        SDL_RenderPresent(m_renderer);
+    };
+
+    for (const auto& page : pages) {
+        if (page.find_first_not_of(" \n\r\t") == std::string::npos && &page != &pages.back()) {
+            continue;
+        }
+        renderPage(page);
+        WaitAnyKey(nullptr, nullptr, nullptr);
+    }
 }
 
 void UIManager::ShowSceneName(int sceneId) {

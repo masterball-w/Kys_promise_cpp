@@ -875,9 +875,9 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
                 }
             }
             
-            // Draw Player (if at this tile)
-            if (!hidePlayer && i == centerX && j == centerY) {
-                int face = GameManager::getInstance().getMainMapFace();
+            // Draw Player (if at this tile) — Pascal DrawRoleOnScene gated by ShowMR
+            if (!hidePlayer && GameManager::getInstance().getShowMR() && i == centerX && j == centerY) {
+                int face = GameManager::getInstance().getSubMapFace();
                 int step = GameManager::getInstance().getWalkFrame();
                 // Face: 0,1,2,3 -> Pascal mapping might differ
                 // Pascal: 2501 + SFace * 7 + SStep
@@ -915,7 +915,8 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
         }
     }
     GameManager::getInstance().getMainMapPosition(px, py);
-    if (!hidePlayer && px >= 0 && px < SCENE_MAP_SIZE && py >= 0 && py < SCENE_MAP_SIZE) {
+    if (!hidePlayer && GameManager::getInstance().getShowMR() &&
+        px >= 0 && px < SCENE_MAP_SIZE && py >= 0 && py < SCENE_MAP_SIZE) {
         // Player sprite index
         // Base: 2501 (Protagonist)
         // Face Mapping:

@@ -19,9 +19,12 @@ public:
 
     // Resource Loading
     bool LoadSystemGraphics(); // Loads Background.Pic and others
-    void PlayTitleAnimation(); // Plays Begin.Pic
+    void PlayTitleAnimation(); // Plays Begin.Pic (full forward)
+    void PlayBeginningMovie(int beginNum, int endNum); // Align Pascal PlayBeginningMovie
     void DrawTitleScreen();    // Draws Background.Pic index 0
-    void DrawTitleBackground(); // Draws the last frame of Begin.Pic
+    void DrawTitleBackground(); // Draws the last frame of Begin.Pic / Background.Pic
+    void DrawCharacterCreationNamePrompt(const std::string& nameUtf8);
+    void DrawCharacterCreationAttributes(const Role& role);
 
     // Core UI Drawing
     void DrawRectangle(int x, int y, int w, int h, uint32_t colorin, uint32_t colorframe, int alpha);

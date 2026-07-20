@@ -265,6 +265,11 @@ int16_t EventManager::ReadScriptArg(int& offset) {
     return m_eventScripts[offset++];
 }
 
+void EventManager::SetExecutionContext(int sceneId, int eventId) {
+    m_currentSceneId = sceneId;
+    m_currentEventId = eventId;
+}
+
 void EventManager::ExecuteEvent(int eventScriptId) {
     if (eventScriptId <= 0 || eventScriptId > m_eventIndices.size()) {
         std::cerr << "ExecuteEvent: Invalid ID " << eventScriptId << ". Max ID: " << m_eventIndices.size() << std::endl;
@@ -1467,7 +1472,8 @@ void EventManager::HandleInstruct43Sub(int subFunc, int arg3, int arg4, int arg5
         setMiniResult(mini.Acupuncture(arg3));
         Instruct_Redraw();
     } else if (subFunc == -5) {
-        GameManager::getInstance().setX50(0x7000, 0);
+        // Pascal: ShowMR := True; if e3 = 1 then ShowMR := False;
+        GameManager::getInstance().setShowMR(arg3 != 1);
     } else if (subFunc == -6) {
         GameManager::getInstance().setX50(0x6001, arg3);
         GameManager::getInstance().setX50(0x6002, arg4);
@@ -1689,7 +1695,7 @@ void EventManager::Instruct_Dialogue(int talkId, int headId, int mode) {
 }
 
 void EventManager::Instruct_ShowTitle(int talkNum, int color) {
-    // Instruction 70: Show a big title on screen
+    // Instruction 70 / StartAmi ShowTitle — color packed as (color2 << 8) | color1 palette indices
     int actualTalkNum = (talkNum > 0) ? talkNum - 1 : 0;
     
     if (actualTalkNum < 0 || actualTalkNum >= m_talkIndices.size()) return;
@@ -1709,12 +1715,12 @@ void EventManager::Instruct_ShowTitle(int talkNum, int color) {
     }
     
     std::string text(decoded.begin(), decoded.end());
-    // Basic placeholder replacement (copy from NewTalk0 if needed, but Title usually static)
-    
     std::string utf8Text = TextManager::getInstance().talkToUtf8(text);
-    
-    uint32_t colorMain = GraphicsUtils::getPaletteColor(5);
-    uint32_t colorShadow = GraphicsUtils::getPaletteColor(7);
+
+    // Pascal: color1 := color and $FF; color2 := (color shr 8) and $FF; colcolor(0, color1/2)
+    // UIManager ResolveTextColor expects 0xIIFFFFFF (palette index in high byte).
+    const uint32_t colorMain = (static_cast<uint32_t>(color & 0xFF) << 24) | 0x00FFFFFFu;
+    const uint32_t colorShadow = (static_cast<uint32_t>((color >> 8) & 0xFF) << 24) | 0x00FFFFFFu;
     
     UIManager::getInstance().ShowTitle(utf8Text, -1, -1, colorMain, colorShadow);
 }
@@ -1982,6 +1988,8 @@ int EventManager::Instruct_CheckMoney(int moneyNeeded, int jump1, int jump2) {
 }
 
 void EventManager::Instruct_FadeIn() {
+    // Pascal instruct_13: InitialScene; then fade black overlay out while Redraw
+    Instruct_Redraw();
     UIManager::getInstance().FadeScreen(true);
 }
 

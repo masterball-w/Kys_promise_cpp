@@ -124,6 +124,8 @@ public:
     void setSavedWorldPosition(int x, int y) { m_savedWorldX = x; m_savedWorldY = y; }
     void setMainMapFace(int face) { m_mainMapFace = face; }
     int getMainMapFace() const { return m_mainMapFace; }
+    bool getShowMR() const { return m_showMR; }
+    void setShowMR(bool show) { m_showMR = show; }
     void setSubMapFace(int16_t face) { m_subMapFace = face; }
     int16_t getSubMapFace() const { return m_subMapFace; }
     void getFacingTile(int& x, int& y) const;
@@ -239,6 +241,13 @@ private:
     };
     GameState m_currentState = GameState::TitleScreen;
 
+    // Character creation: name first, then attribute roll (Pascal InitialRole / RandomAttribute)
+    enum class CharCreatePhase {
+        NameInput,
+        AttributeSelect
+    };
+    CharCreatePhase m_charCreatePhase = CharCreatePhase::NameInput;
+
     bool m_isRunning;
     int m_currentSceneId;
     int m_mainMapX, m_mainMapY;
@@ -251,6 +260,7 @@ private:
     int16_t m_inShip = 0;
     int16_t m_shipX = 0, m_shipY = 0, m_shipFace = 0;
     int16_t m_subMapFace = 0;
+    bool m_showMR = true; // Pascal ShowMR: hide protagonist during new-game opening
     int16_t m_time = 0, m_timeEvent = 0, m_randomEvent = 0;
     int16_t m_gameTime = 0;
     bool m_playedTitleAnim = false;
@@ -273,6 +283,7 @@ private:
     bool m_characterCreationTextInputActive = false;
     void RandomizeRoleStats(Role& role);
     void InitNewGame();
+    void PlayNewGameIntro(); // PlayBeginningMovie(26,0) + StartAmi + Event 101
     
     // Title Menu Helpers
     int m_titleMenuSelection = 0;

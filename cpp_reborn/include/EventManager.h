@@ -32,6 +32,11 @@ public:
 
     // Execute a specific event script by ID
     void ExecuteEvent(int eventScriptId);
+    void SetExecutionContext(int sceneId, int eventId);
+    void Instruct_FadeIn();  // instruct_13 — also used by new-game intro
+    void Instruct_FadeOut(); // instruct_14
+    void Instruct_ShowTitle(int talkNum, int color); // instruct_70 / StartAmi
+
 
     // Testing Helper
     void AddMockScript(int id, const std::vector<int16_t>& script);
@@ -68,8 +73,6 @@ private:
     void Instruct_Rest(); // instruct_12 (Also instruct_64 sometimes?)
     int Instruct_AskRest(int jump1, int jump2); // instruct_11 - Ask for rest
     int Instruct_CheckMoney(int moneyNeeded, int jump1, int jump2); // instruct_31 - Check money
-    void Instruct_FadeIn(); // instruct_13
-    void Instruct_FadeOut(); // instruct_14
     void Instruct_LeaveParty(int roleId); // instruct_21
     void Instruct_SetScene(int sceneId, int x, int y, int dir);
     void Instruct_19(int x, int y); // Teleport within scene
@@ -82,7 +85,6 @@ private:
     // New Instructions from KYS Promise
     void Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int place, int showHead, int color, int frame); // instruct_68
     void Instruct_ReSetName(int type, int id, int newNameId); // instruct_69
-    void Instruct_ShowTitle(int talkNum, int color); // instruct_70
     // void Instruct_JmpScene(int sceneId, int x, int y); // instruct_71 (Moved to public)
     void Instruct_Flash(int color, int time); // (legacy helper)
     void Instruct_Delay(int time); // helper delay (not opcode 17)
