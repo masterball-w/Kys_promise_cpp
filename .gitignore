@@ -6,6 +6,7 @@
 cursor/
 
 # --- Build outputs ---
+build/
 cpp_reborn/build/*
 !cpp_reborn/build/.gitkeep
 **/CMakeCache.txt

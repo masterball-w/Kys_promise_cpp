@@ -62,6 +62,9 @@ public:
     void SelectShowItem();
     void ShowItem(int menuSelection, int selectedIndex = -1, bool inSubmenu = false);
     void ShowShop(int shopId);
+    // Mini-game prompt: returns true on success. chancePercent 0-100 (boosted by pet skill 4-2).
+    // Enter=挑战, Esc=放弃(失败). Does not silently auto-pass.
+    bool RunMiniGame(const std::string& titleUtf8, const std::string& hintUtf8, int chancePercent);
     bool ShowSaveLoadMenu(bool isSave); // Shows save/load slots
     void ShowVolumeMenu();
     void ShowDialogue(const std::string& text, int headId, int mode, const std::string& nameUtf8 = "", const std::string& nameRawBytes = "", int colorIndex = -1);
@@ -76,6 +79,7 @@ public:
     // Screen Effects
     void FadeScreen(bool fadeIn);
     void FlashScreen(uint32_t color, int durationMs);
+    void CaptureScreen(); // Capture current frame for translucent menus
 
     // Force screen update (for blocking loops)
     void UpdateScreen();
@@ -137,8 +141,6 @@ private:
     void MenuMedPoision(int healerId);
     int SelectItemUser(int menuSelection, int selectedIndex, int itemId, int itemType);
 
-    // Capture Screen Helper
-    void CaptureScreen();
     void ShowDialogueWithCapture(const std::string& text, int headId, int mode);
 
 private:

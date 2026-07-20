@@ -8,11 +8,13 @@
 #include "UIManager.h"
 #include "SoundManager.h"
 #include "InputManager.h"
+#include "LittleGameManager.h"
 #include <iostream>
 #include <cstring>
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <cstdlib>
 
 namespace {
     uint16_t ReadU16LE(const std::string& s, size_t offset) {
@@ -439,6 +441,10 @@ void EventManager::ExecuteEvent(int eventScriptId) {
             case 12: Instruct_Rest(); break;
             case 13: Instruct_FadeIn(); break;
             case 14: Instruct_FadeOut(); break;
+            case 15: { // instruct_15: game failed -> title
+                Instruct_15();
+                return;
+            }
             case 16: { // instruct_16: Check if role is in team
                 int argStart = pc - 1; // 记录 opcode 位置
                 int roleId = ReadScriptArg(pc);
@@ -455,7 +461,15 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                           << (pc < m_eventScripts.size() ? m_eventScripts[pc] : -1) << std::endl;
                 break;
             }
-            case 17: Instruct_Delay(ReadScriptArg(pc)); break;
+            case 17: { // instruct_17: set SData tile (5 args) — NOT delay
+                int snum = ReadScriptArg(pc);
+                int layer = ReadScriptArg(pc);
+                int y = ReadScriptArg(pc); // list[2]
+                int x = ReadScriptArg(pc); // list[3]
+                int value = ReadScriptArg(pc);
+                Instruct_17(snum, layer, x, y, value);
+                break;
+            }
             case 18: { // instruct_18: Check if player has item in inventory
                 int argStart = pc - 1; // 记录 opcode 位置
                 int itemNum = ReadScriptArg(pc);
@@ -472,13 +486,34 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 Instruct_19(x, y);
                 break;
             }
+            case 20: { // instruct_20: team full?
+                int argStart = pc - 1;
+                int jump1 = ReadScriptArg(pc);
+                int jump2 = ReadScriptArg(pc);
+                const auto& team = GameManager::getInstance().getTeamList();
+                bool full = true;
+                for (int i = 0; i < 6; ++i) {
+                    int id = (i < (int)team.size()) ? team[i] : -1;
+                    if (id < 0) {
+                        full = false;
+                        break;
+                    }
+                }
+                pc = argStart + (full ? jump1 : jump2) + 3;
+                break;
+            }
             case 21: Instruct_LeaveParty(ReadScriptArg(pc)); break;
+            case 22: {
+                Instruct_22();
+                break;
+            }
             case 23: {
                 int roleId = ReadScriptArg(pc);
                 int poison = ReadScriptArg(pc);
                 Instruct_23(roleId, poison);
                 break;
             }
+            case 24: break; // instruct_24: unused blank in Pascal
             case 25: {
                 int x1 = ReadScriptArg(pc);
                 int y1 = ReadScriptArg(pc);
@@ -550,16 +585,25 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                  GameManager::getInstance().AddItem(itemId, amount);
                  break;
             }
-            case 33: { // 3 args
-                 for(int k=0; k<3; ++k) ReadScriptArg(pc);
+            case 33: { // instruct_33: StudyMagic
+                 int rnum = ReadScriptArg(pc);
+                 int magicnum = ReadScriptArg(pc);
+                 int dismode = ReadScriptArg(pc);
+                 Instruct_33(rnum, magicnum, dismode);
                  break;
             }
-            case 34: { // 2 args
-                 for(int k=0; k<2; ++k) ReadScriptArg(pc);
+            case 34: { // instruct_34: Aptitude
+                 int rnum = ReadScriptArg(pc);
+                 int iq = ReadScriptArg(pc);
+                 Instruct_34(rnum, iq);
                  break;
             }
-            case 35: { // 4 args
-                 for(int k=0; k<4; ++k) ReadScriptArg(pc);
+            case 35: { // instruct_35: write magic slot
+                 int rnum = ReadScriptArg(pc);
+                 int magiclistnum = ReadScriptArg(pc);
+                 int magicnum = ReadScriptArg(pc);
+                 int exp = ReadScriptArg(pc);
+                 Instruct_35(rnum, magiclistnum, magicnum, exp);
                  break;
             }
             case 36: { // 3 args, returns jump
@@ -588,7 +632,10 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                  pc = argStart + (condition ? jump1 : jump2) + 4; // 正确的跳转位置计算
                  break;
             }
-            case 37: ReadScriptArg(pc); break;
+            case 37: {
+                Instruct_37(ReadScriptArg(pc));
+                break;
+            }
             case 38: { // Instruct_38(snum, layernum, oldpic, newpic)
                  int snum = ReadScriptArg(pc);
                  int layernum = ReadScriptArg(pc);
@@ -614,12 +661,28 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 Instruct_40(dir);
                 break;
             }
-            case 41: { // 3 args
-                 for(int k=0; k<3; ++k) ReadScriptArg(pc);
+            case 41: { // instruct_41: TakingItem
+                 int rnum = ReadScriptArg(pc);
+                 int inum = ReadScriptArg(pc);
+                 int amount = ReadScriptArg(pc);
+                 Instruct_41(rnum, inum, amount);
                  break;
             }
-            case 42: { // 2 args, returns jump
-                 for(int k=0; k<2; ++k) ReadScriptArg(pc);
+            case 42: { // instruct_42: female in team?
+                 int argStart = pc - 1;
+                 int jump1 = ReadScriptArg(pc);
+                 int jump2 = ReadScriptArg(pc);
+                 int jump = jump2;
+                 int roleCount = GameManager::getInstance().getRoleCount();
+                 for (int i = 0; i < roleCount; ++i) {
+                     Role& r = GameManager::getInstance().getRole(i);
+                     int ts = r.getTeamState();
+                     if ((ts == 1 || ts == 2) && r.getSexual() == 1) {
+                         jump = jump1;
+                         break;
+                     }
+                 }
+                 pc = argStart + jump + 3;
                  break;
             }
             case 43: { // instruct_43: Call another event / special functions
@@ -629,71 +692,11 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 int arg4 = ReadScriptArg(pc);
                 int arg5 = ReadScriptArg(pc);
                 int arg6 = ReadScriptArg(pc);
-                
-                std::cout << "[instruct_43] e1=" << e1 << " subFunc=" << subFunc 
-                          << " arg3=" << arg3 << " arg4=" << arg4 
+                (void)e1;
+                std::cout << "[instruct_43] subFunc=" << subFunc
+                          << " arg3=" << arg3 << " arg4=" << arg4
                           << " arg5=" << arg5 << " arg6=" << arg6 << std::endl;
-                
-                GameManager::getInstance().setX50(0x7100, arg3);
-                GameManager::getInstance().setX50(0x7101, arg4);
-                GameManager::getInstance().setX50(0x7102, arg5);
-                GameManager::getInstance().setX50(0x7103, arg6);
-                
-                if (subFunc == -1) {
-                    // jmpScene(e3, e4, e5)
-                    Instruct_JmpScene(arg3, arg4, arg5);
-                } else if (subFunc == -2) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                    UIManager::getInstance().ShowDialogue(" （作詩小遊戲暫以自動通過處理）", -1, 0);
-                    Instruct_Redraw();
-                } else if (subFunc == -3) {
-                    // Check pet skill: GetPetSkill(arg3, arg4)
-                    GameManager::getInstance().setX50(0x7000, 1);
-                    int roleId = arg3;
-                    int skillIndex = arg4;
-                    if (GameManager::getInstance().getRole(roleId).getMagic(skillIndex) > 0) {
-                        GameManager::getInstance().setX50(0x7000, 0);
-                    }
-                    std::cout << "[instruct_43 -3] role=" << roleId << " skill=" << skillIndex 
-                              << " hasSkill=" << (GameManager::getInstance().getX50(0x7000) == 0 ? "yes" : "no") << std::endl;
-                } else if (subFunc == -4) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                    UIManager::getInstance().ShowDialogue(" （針灸小遊戲暫以自動通過處理）", -1, 0);
-                    Instruct_Redraw();
-                } else if (subFunc == -5) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                } else if (subFunc == -6) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                } else if (subFunc == -7) {
-                    int randomEvent = GameManager::getInstance().getX50(0x6000);
-                    if (randomEvent > 0) ExecuteEvent(randomEvent);
-                } else if (subFunc == -8) {
-                    // SDL_UpdateRect2 - just redraw
-                    Instruct_Redraw();
-                } else if (subFunc == -9) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                    Instruct_Redraw();
-                } else if (subFunc == -10) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                    Instruct_Redraw();
-                } else if (subFunc == -11) {
-                    // AddDefense
-                    int roleId = arg3;
-                    int def = arg4;
-                    Role& role = GameManager::getInstance().getRole(roleId);
-                    role.setDefence(role.getDefence() + def);
-                    Instruct_Redraw();
-                } else if (subFunc == 540) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                    UIManager::getInstance().ShowDialogue(" （解謎小遊戲暫以自動通過處理）", -1, 0);
-                } else if (subFunc == 1055) {
-                    Instruct_Redraw();
-                } else if (subFunc > 0) {
-                    // CallEvent: Execute another event script
-                    // This is the key for pet skill advanced dialogue!
-                    std::cout << "[instruct_43] Calling event " << subFunc << std::endl;
-                    ExecuteEvent(subFunc);
-                }
+                HandleInstruct43Sub(subFunc, arg3, arg4, arg5, arg6);
                 break;
             }
             case 44: { // Instruct_44(e1, b1, end1, e2, b2, end2)
@@ -705,6 +708,36 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                  int end2 = ReadScriptArg(pc);
                  Instruct_44(e1, b1, end1, e2, b2, end2);
                  break;
+            }
+            case 45: {
+                int rnum = ReadScriptArg(pc);
+                int speed = ReadScriptArg(pc);
+                Instruct_45(rnum, speed);
+                break;
+            }
+            case 46: {
+                int rnum = ReadScriptArg(pc);
+                int mp = ReadScriptArg(pc);
+                Instruct_46(rnum, mp);
+                break;
+            }
+            case 47: {
+                int rnum = ReadScriptArg(pc);
+                int attack = ReadScriptArg(pc);
+                Instruct_47(rnum, attack);
+                break;
+            }
+            case 48: {
+                int rnum = ReadScriptArg(pc);
+                int hp = ReadScriptArg(pc);
+                Instruct_48(rnum, hp);
+                break;
+            }
+            case 49: {
+                int rnum = ReadScriptArg(pc);
+                int mpPro = ReadScriptArg(pc);
+                Instruct_49(rnum, mpPro);
+                break;
             }
             case 50: {
                 int args[7];
@@ -720,10 +753,50 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 }
                 break;
             }
+            case 51: Instruct_51(); break;
+            case 52: Instruct_52(); break;
+            case 53: Instruct_53(); break;
+            case 54: Instruct_54(); break;
+            case 55: {
+                int argStart = pc - 1;
+                int enum_ = ReadScriptArg(pc);
+                int value = ReadScriptArg(pc);
+                int jump1 = ReadScriptArg(pc);
+                int jump2 = ReadScriptArg(pc);
+                int jump = Instruct_55(enum_, value, jump1, jump2);
+                pc = argStart + jump + 5;
+                break;
+            }
+            case 56: Instruct_56(ReadScriptArg(pc)); break;
+            case 58: {
+                if (!Instruct_58()) return; // failed -> title
+                break;
+            }
+            case 59: Instruct_59(); break;
+            case 60: {
+                int argStart = pc - 1;
+                int snum = ReadScriptArg(pc);
+                int enum_ = ReadScriptArg(pc);
+                int pic = ReadScriptArg(pc);
+                int jump1 = ReadScriptArg(pc);
+                int jump2 = ReadScriptArg(pc);
+                int jump = Instruct_60(snum, enum_, pic, jump1, jump2);
+                pc = argStart + jump + 6;
+                break;
+            }
             case 62: {
                 Instruct_GameOver();
                 return;
             }
+            case 63: {
+                int rnum = ReadScriptArg(pc);
+                int sexual = ReadScriptArg(pc);
+                Instruct_63(rnum, sexual);
+                break;
+            }
+            case 64: Instruct_64(); break;
+            case 66: Instruct_66(ReadScriptArg(pc)); break;
+            case 67: Instruct_67(ReadScriptArg(pc)); break;
 
              // New Opcodes
              case 68: {
@@ -977,9 +1050,579 @@ void EventManager::Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int 
 }
 
 void EventManager::Instruct_ReSetName(int type, int id, int newNameId) {
-    // Rename role or item?
-    // type: 0=Role, 1=Item?
-    // Not implemented yet.
+    // Align with kys_event.pas ReSetName(t, inum, newnamenum)
+    std::string name;
+    if (newNameId == 0) {
+        if (!m_nameIndices.empty() && !m_nameData.empty()) {
+            int offset = 0;
+            int end = m_nameIndices[0];
+            int len = end - offset;
+            if (len > 0 && end <= (int)m_nameData.size()) {
+                for (int i = 0; i < len; ++i) {
+                    uint8_t b = m_nameData[offset + i] ^ 0xFF;
+                    if (b == 0 || b == 0x2A || b == 0xFF) break;
+                    name += static_cast<char>(b);
+                }
+            }
+        }
+    } else {
+        name = GetNameFromData(newNameId);
+    }
+    if (name.empty()) return;
+
+    switch (type) {
+        case 0: // Role
+            if (id >= 0 && id < GameManager::getInstance().getRoleCount()) {
+                GameManager::getInstance().getRole(id).setName(name);
+            }
+            break;
+        case 1: // Item name
+            GameManager::getInstance().getItem(id).setName(name);
+            break;
+        case 2: { // Scene
+            Scene* scene = SceneManager::getInstance().GetScene(id);
+            if (scene) scene->setName(name);
+            break;
+        }
+        case 3: // Magic
+            GameManager::getInstance().getMagic(id).setName(name);
+            break;
+        case 4: // Item introduction
+            GameManager::getInstance().getItem(id).setIntroduction(name);
+            break;
+        default:
+            break;
+    }
+}
+
+int EventManager::GetMagicLevel(int person, int mnum) {
+    if (person < 0 || person >= GameManager::getInstance().getRoleCount()) return -1;
+    Role& role = GameManager::getInstance().getRole(person);
+    for (int i = 0; i < 10; ++i) {
+        if (role.getMagic(i) == mnum) {
+            return role.getMagLevel(i);
+        }
+    }
+    return -1;
+}
+
+void EventManager::ShowAttributeChangeTip(const std::string& roleNameGbk, const std::string& labelUtf8, int delta) {
+    std::string roleUtf8 = TextManager::getInstance().nameToUtf8(roleNameGbk);
+    std::string msg = roleUtf8 + " " + labelUtf8 + " " + std::to_string(std::abs(delta));
+    UIManager::getInstance().ShowDialogue(msg, -1, 0);
+    Instruct_Redraw();
+}
+
+void EventManager::StudyMagic(int rnum, int magicnum, int newmagicnum, int level, int dismode) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+
+    if (newmagicnum == 0) {
+        // Remove magicnum and compact slots
+        for (int i = 0; i < 10; ++i) {
+            if (role.getMagic(i) == magicnum) {
+                for (int n = i; n < 9; ++n) {
+                    role.setMagic(n, role.getMagic(n + 1));
+                    role.setMagLevel(n, role.getMagLevel(n + 1));
+                }
+                role.setMagic(9, 0);
+                role.setMagLevel(9, 0);
+                break;
+            }
+        }
+    } else {
+        int n = 0;
+        for (int i = 0; i < 10; ++i) {
+            if (role.getMagic(i) == newmagicnum) {
+                int lv = level;
+                if (lv == -2) lv = 0;
+                int newLv = role.getMagLevel(i) + lv + 100;
+                if (newLv > 999) newLv = 999;
+                role.setMagLevel(i, static_cast<int16_t>(newLv));
+                StudyMagic(rnum, magicnum, 0, 0, 1);
+                n = 1;
+                break;
+            }
+        }
+        if (n == 0) {
+            for (int i = 0; i < 10; ++i) {
+                if (role.getMagic(i) == magicnum) {
+                    if (level != -2) role.setMagLevel(i, static_cast<int16_t>(level));
+                    role.setMagic(i, static_cast<int16_t>(newmagicnum));
+                    break;
+                }
+            }
+        }
+    }
+
+    if (dismode == 0 && newmagicnum != 0) {
+        std::string roleUtf8 = TextManager::getInstance().nameToUtf8(role.getName());
+        std::string magicUtf8 = TextManager::getInstance().nameToUtf8(
+            GameManager::getInstance().getMagic(newmagicnum).getName());
+        UIManager::getInstance().ShowDialogue(roleUtf8 + " 學會 " + magicUtf8, -1, 0);
+        Instruct_Redraw();
+    }
+
+    int learned = 0;
+    for (int i = 0; i < 10; ++i) {
+        if (role.getMagic(i) > 0) ++learned;
+    }
+    if (learned == 10) {
+        int book = role.getPracticeBook();
+        if (book >= 0) {
+            int bookMagic = GameManager::getInstance().getItem(book).getMagic();
+            if (bookMagic > 0 && GetMagicLevel(rnum, bookMagic) == -1) {
+                GameManager::getInstance().AddItem(book, 1);
+                role.setPracticeBook(-1);
+                role.setExpForBook(0);
+            }
+        }
+    }
+}
+
+void EventManager::Instruct_33(int rnum, int magicnum, int dismode) {
+    StudyMagic(rnum, 0, magicnum, 0, dismode);
+}
+
+void EventManager::Instruct_34(int rnum, int iq) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    int applied = iq;
+    if (role.getAptitude() + iq <= 100) {
+        role.setAptitude(static_cast<int16_t>(role.getAptitude() + iq));
+    } else {
+        applied = 100 - role.getAptitude();
+        role.setAptitude(100);
+    }
+    if (applied > 0) {
+        ShowAttributeChangeTip(role.getName(), "資質增加", applied);
+    }
+}
+
+void EventManager::Instruct_35(int rnum, int magiclistnum, int magicnum, int exp) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    if (magiclistnum < 0 || magiclistnum > 9) {
+        int i = 0;
+        for (; i < 10; ++i) {
+            if (role.getMagic(i) <= 0) {
+                role.setMagic(i, static_cast<int16_t>(magicnum));
+                role.setMagLevel(i, static_cast<int16_t>(exp));
+                break;
+            }
+        }
+        if (i == 10) {
+            role.setMagic(0, static_cast<int16_t>(magicnum));
+            role.setMagLevel(0, static_cast<int16_t>(exp)); // Pascal MagLevel[i] when i=10 is OOB; use [0]
+        }
+    } else {
+        role.setMagic(magiclistnum, static_cast<int16_t>(magicnum));
+        role.setMagLevel(magiclistnum, static_cast<int16_t>(exp));
+    }
+}
+
+void EventManager::Instruct_37(int ethics) {
+    Role& hero = GameManager::getInstance().getRole(0);
+    int v = hero.getEthics() + ethics;
+    if (v > 100) v = 100;
+    if (v < 0) v = 0;
+    hero.setEthics(static_cast<int16_t>(v));
+}
+
+void EventManager::Instruct_41(int rnum, int inum, int amount) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    int found = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (role.getTakingItem(i) == inum) {
+            role.setTakingItemAmount(i, static_cast<int16_t>(role.getTakingItemAmount(i) + amount));
+            found = 1;
+            break;
+        }
+    }
+    if (found == 0) {
+        for (int i = 0; i < 4; ++i) {
+            if (role.getTakingItem(i) == -1) {
+                role.setTakingItem(i, static_cast<int16_t>(inum));
+                role.setTakingItemAmount(i, static_cast<int16_t>(amount));
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (role.getTakingItemAmount(i) <= 0) {
+            role.setTakingItem(i, -1);
+            role.setTakingItemAmount(i, 0);
+        }
+    }
+}
+
+void EventManager::Instruct_22() {
+    const auto& team = GameManager::getInstance().getTeamList();
+    for (int i = 0; i < 6; ++i) {
+        int id = (i < (int)team.size()) ? team[i] : -1;
+        if (id < 0) continue;
+        if (id >= GameManager::getInstance().getRoleCount()) continue;
+        GameManager::getInstance().getRole(id).setCurrentMP(0);
+    }
+}
+
+void EventManager::Instruct_45(int rnum, int speed) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    role.setSpeed(static_cast<int16_t>(role.getSpeed() + speed));
+    ShowAttributeChangeTip(role.getName(), speed > 0 ? "輕功增加" : "輕功減少", speed);
+}
+
+void EventManager::Instruct_46(int rnum, int mp) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    role.setMaxMP(static_cast<int16_t>(role.getMaxMP() + mp));
+    role.setCurrentMP(role.getMaxMP());
+    ShowAttributeChangeTip(role.getName(), mp > 0 ? "內力增加" : "內力減少", mp);
+}
+
+void EventManager::Instruct_47(int rnum, int attack) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    role.setAttack(static_cast<int16_t>(role.getAttack() + attack));
+    ShowAttributeChangeTip(role.getName(), attack > 0 ? "武力增加" : "武力減少", attack);
+}
+
+void EventManager::Instruct_48(int rnum, int hp) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    Role& role = GameManager::getInstance().getRole(rnum);
+    role.setMaxHP(static_cast<int16_t>(role.getMaxHP() + hp));
+    role.setCurrentHP(role.getMaxHP());
+    ShowAttributeChangeTip(role.getName(), hp > 0 ? "生命增加" : "生命減少", hp);
+}
+
+void EventManager::Instruct_49(int rnum, int mpPro) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    GameManager::getInstance().getRole(rnum).setMPType(static_cast<int16_t>(mpPro));
+}
+
+void EventManager::Instruct_15() {
+    SoundManager::getInstance().PlayMusic(13);
+    Instruct_Redraw();
+    UIManager::getInstance().ShowDialogue(" 三十功名塵與土，八千里路雲和月", -1, 0);
+    GameManager::getInstance().ReturnToTitleScreen();
+}
+
+void EventManager::Instruct_17(int snum, int layer, int x, int y, int value) {
+    // Pascal: sdata[list[0], list[1], list[3], list[2]] := list[4]
+    if (snum == -2) snum = m_executingSceneId;
+    if (snum < 0) snum = GameManager::getInstance().getCurrentSceneId();
+    SceneManager::getInstance().SetSceneTile(snum, layer, x, y, static_cast<int16_t>(value));
+    Instruct_Redraw();
+}
+
+void EventManager::Instruct_51() {
+    // Softstar doll random talk: SOFTSTAR_BEGIN_TALK(2547) + random(18), head $72
+    const int SOFTSTAR_BEGIN_TALK = 2547;
+    const int SOFTSTAR_NUM_TALK = 18;
+    int talkId = SOFTSTAR_BEGIN_TALK + (std::rand() % SOFTSTAR_NUM_TALK);
+    Instruct_Dialogue(talkId, 0x72, 0);
+}
+
+void EventManager::Instruct_52() {
+    int ethics = GameManager::getInstance().getRole(0).getEthics();
+    UIManager::getInstance().ShowDialogue(" 你的品德指數為：" + std::to_string(ethics), -1, 0);
+    Instruct_Redraw();
+}
+
+void EventManager::Instruct_53() {
+    int repute = GameManager::getInstance().getRole(0).getRepute();
+    UIManager::getInstance().ShowDialogue(" 你的聲望指數為：" + std::to_string(repute), -1, 0);
+    Instruct_Redraw();
+}
+
+void EventManager::Instruct_54() {
+    size_t n = SceneManager::getInstance().GetSceneCount();
+    for (size_t i = 0; i < n; ++i) {
+        Scene* scene = SceneManager::getInstance().GetScene(static_cast<int>(i));
+        if (!scene) continue;
+        int cond = scene->getEnCondition();
+        if (cond == 1) scene->setEnCondition(0);
+        else if (cond == 3) scene->setEnCondition(1);
+        else if (cond == 4) scene->setEnCondition(2);
+    }
+}
+
+int EventManager::Instruct_55(int enum_, int value, int jump1, int jump2) {
+    int sceneId = m_executingSceneId;
+    if (sceneId < 0) sceneId = GameManager::getInstance().getCurrentSceneId();
+    int16_t cur = SceneManager::getInstance().GetEventData(sceneId, enum_, 2);
+    return (cur == value) ? jump1 : jump2;
+}
+
+void EventManager::Instruct_56(int repute) {
+    Role& hero = GameManager::getInstance().getRole(0);
+    int old = hero.getRepute();
+    int neu = old + repute;
+    hero.setRepute(static_cast<int16_t>(neu));
+    if (neu > 200 && old <= 200) {
+        // Home invitation event appears
+        std::vector<int16_t> args = {
+            70, 11, 0, 11, static_cast<int16_t>(0x3A4), -1, -1,
+            static_cast<int16_t>(0x1F20), static_cast<int16_t>(0x1F20), static_cast<int16_t>(0x1F20),
+            0, 18, 21
+        };
+        Instruct_ModifyEvent(args);
+    }
+}
+
+bool EventManager::Instruct_58() {
+    for (int i = 0; i < 15; ++i) {
+        int p = std::rand() % 2;
+        Instruct_Dialogue(2854 + i * 2 + p, 0, 3);
+        bool won = BattleManager::getInstance().StartBattle(102 + i * 2 + p, 0);
+        if (!won) {
+            Instruct_15();
+            return false;
+        }
+        Instruct_FadeOut();
+        Instruct_FadeIn();
+        if (i % 3 == 2) {
+            Instruct_Dialogue(2891, 0, 3);
+            Instruct_Rest();
+            Instruct_FadeOut();
+            Instruct_FadeIn();
+        }
+    }
+    Instruct_Dialogue(2884, 0, 3);
+    Instruct_Dialogue(2885, 0, 3);
+    Instruct_Dialogue(2886, 0, 3);
+    Instruct_Dialogue(2887, 0, 3);
+    Instruct_Dialogue(2888, 0, 3);
+    Instruct_Dialogue(2889, 0, 1);
+    Instruct_AddItem(0x8F, 1);
+    return true;
+}
+
+void EventManager::Instruct_59() {
+    // Clear team slots 1..5; return gear for all TeamState in {1,2}
+    for (int i = 1; i < 6; ++i) {
+        GameManager::getInstance().setTeamMember(i, -1);
+    }
+    int roleCount = GameManager::getInstance().getRoleCount();
+    for (int rnum = 1; rnum < roleCount; ++rnum) {
+        Role& role = GameManager::getInstance().getRole(rnum);
+        int ts = role.getTeamState();
+        if (ts != 1 && ts != 2) continue;
+        for (int i = 0; i < 5; ++i) {
+            int eq = role.getEquip(i);
+            if (eq >= 0) {
+                GameManager::getInstance().AddItem(eq, 1);
+                role.setEquip(i, -1);
+            }
+        }
+        if (role.getPracticeBook() >= 0) {
+            GameManager::getInstance().AddItem(role.getPracticeBook(), 1);
+            role.setPracticeBook(-1);
+            role.setExpForBook(0);
+        }
+        role.setTeamState(3);
+    }
+}
+
+int EventManager::Instruct_60(int snum, int enum_, int pic, int jump1, int jump2) {
+    if (snum == -2) snum = m_executingSceneId;
+    if (snum < 0) snum = GameManager::getInstance().getCurrentSceneId();
+    int16_t cur = SceneManager::getInstance().GetEventData(snum, enum_, 5);
+    return (cur == pic) ? jump1 : jump2;
+}
+
+void EventManager::Instruct_63(int rnum, int sexual) {
+    if (rnum < 0 || rnum >= GameManager::getInstance().getRoleCount()) return;
+    GameManager::getInstance().getRole(rnum).setSexual(static_cast<int16_t>(sexual));
+}
+
+void EventManager::Instruct_64() {
+    // Pascal instruct_64 body is empty ("韦小宝的商店" stub). Remake opens shop UI.
+    UIManager::getInstance().ShowShop(0);
+}
+
+void EventManager::HandleInstruct43Sub(int subFunc, int arg3, int arg4, int arg5, int arg6) {
+    GameManager::getInstance().setX50(0x7100, arg3);
+    GameManager::getInstance().setX50(0x7101, arg4);
+    GameManager::getInstance().setX50(0x7102, arg5);
+    GameManager::getInstance().setX50(0x7103, arg6);
+
+    auto setMiniResult = [](bool ok) {
+        GameManager::getInstance().setX50(0x7000, ok ? 0 : 1);
+    };
+    auto& mini = LittleGameManager::getInstance();
+
+    if (subFunc == -1) {
+        Instruct_JmpScene(arg3, arg4, arg5);
+    } else if (subFunc == -2) {
+        setMiniResult(mini.Poetry(arg3, arg4, arg5, arg6));
+        Instruct_Redraw();
+    } else if (subFunc == -3) {
+        setMiniResult(BattleManager::getInstance().GetPetSkill(arg3, arg4));
+        std::cout << "[instruct_43 -3] GetPetSkill(" << arg3 << "," << arg4
+                  << ")=" << (GameManager::getInstance().getX50(0x7000) == 0 ? "yes" : "no") << std::endl;
+    } else if (subFunc == -4) {
+        setMiniResult(mini.Acupuncture(arg3));
+        Instruct_Redraw();
+    } else if (subFunc == -5) {
+        GameManager::getInstance().setX50(0x7000, 0);
+    } else if (subFunc == -6) {
+        GameManager::getInstance().setX50(0x6001, arg3);
+        GameManager::getInstance().setX50(0x6002, arg4);
+        GameManager::getInstance().setX50(0x7000, 0);
+        Instruct_Redraw();
+    } else if (subFunc == -7) {
+        GameManager::getInstance().setX50(0x6000, arg3);
+    } else if (subFunc == -8) {
+        Instruct_Redraw();
+    } else if (subFunc == -9) {
+        setMiniResult(mini.ShotEagle(arg3, arg4));
+    } else if (subFunc == -10) {
+        setMiniResult(mini.RotoSpellPicture(arg3, arg4));
+        Instruct_Redraw();
+    } else if (subFunc == -11) {
+        if (arg3 >= 0 && arg3 < GameManager::getInstance().getRoleCount()) {
+            Role& role = GameManager::getInstance().getRole(arg3);
+            role.setDefence(role.getDefence() + arg4);
+        }
+        Instruct_Redraw();
+    } else if (subFunc == -25) {
+        // FemaleSnake → x50[e3] := EatFemale（不写 $7000）
+        int score = mini.FemaleSnake();
+        GameManager::getInstance().setX50(arg3, static_cast<int16_t>(score));
+        Instruct_Redraw();
+    } else if (subFunc == -31) {
+        setMiniResult(mini.Lamp(arg3, arg4, arg5, arg6));
+    } else if (subFunc == 540) {
+        // Pascal Puzzle: 即时推块，不写 $7000
+        Instruct_Puzzle();
+    } else if (subFunc == 1055) {
+        Instruct_Redraw();
+    } else if (subFunc > 0) {
+        std::cout << "[instruct_43] Calling event " << subFunc << std::endl;
+        ExecuteEvent(subFunc);
+    }
+}
+
+void EventManager::Instruct_Puzzle() {
+    // Port of kys_event.pas Puzzle — push puzzle tiles around center event.
+    int sceneId = m_executingSceneId;
+    if (sceneId < 0) sceneId = GameManager::getInstance().getCurrentSceneId();
+    int curEvent = m_executingEventId;
+    if (sceneId < 0 || curEvent < 0) return;
+
+    int sx = 0, sy = 0;
+    GameManager::getInstance().getCameraPosition(sx, sy);
+    int sface = GameManager::getInstance().getSubMapFace();
+
+    int y1 = sy, x1 = sx;
+    if (sface == 0) { y1 = sy; x1 = sx - 1; }
+    else if (sface == 1) { y1 = sy + 1; x1 = sx; }
+    else if (sface == 2) { y1 = sy - 1; x1 = sx; }
+    else if (sface == 3) { y1 = sy; x1 = sx + 1; }
+
+    auto& sm = SceneManager::getInstance();
+    int16_t curDNum = sm.GetSceneTile(sceneId, 3, x1, y1);
+    int16_t centerXY = sm.GetEventData(sceneId, curEvent, 8);
+    int centerY = centerXY / 100;
+    int centerX = centerXY % 100;
+    if (centerY == sy || centerX == sx) return;
+
+    int x221 = y1 - centerY;
+    int x222 = x1 - centerX;
+    int x223 = y1 - sy;
+    int x224 = x1 - sx;
+    int x245 = x221 * x224 - x222 * x223;
+
+    int array1000[9];
+    int array1050[4];
+    for (int i = 0; i < 9; ++i) array1000[i] = -1;
+    for (int i = 0; i < 4; ++i) array1050[i] = -1;
+
+    const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};
+    bool blocked = false;
+    for (int d = 0; d < 4 && !blocked; ++d) {
+        int dy = dirs[d][0];
+        int dx = dirs[d][1];
+        int ny = centerY + dy;
+        int nx = centerX + dx;
+        int16_t ev = sm.GetSceneTile(sceneId, 3, nx, ny);
+        if (ev == -1) continue;
+        if (sm.GetEventData(sceneId, ev, 8) != centerXY) continue;
+
+        array1050[d] = ev;
+        int x262 = ((dy - 1) * dx) * x245;
+        int x263 = ((dx + 1) * dy) * x245;
+        int destY = ny + x262;
+        int destX = nx + x263;
+        if (sm.GetSceneTile(sceneId, 3, destX, destY) != -1) { blocked = true; break; }
+
+        int cy2 = centerY + x262;
+        int cx2 = centerX + x263;
+        int16_t atCenterMove = sm.GetSceneTile(sceneId, 3, cx2, cy2);
+        if (atCenterMove != -1) { blocked = true; break; }
+
+        int slot = (x263 + 1) * 3 + (x262 + 1);
+        if (slot >= 0 && slot < 9) array1000[slot] = ev;
+    }
+    if (blocked) return;
+
+    for (int d = 0; d < 4; ++d) {
+        int x262 = array1050[d];
+        if (x262 == -1) continue;
+        sm.SetSceneTile(sceneId, 3, x1, y1, -1);
+        if (curDNum >= 0) {
+            int16_t oldPic = sm.GetEventData(sceneId, curDNum, 5);
+            (void)oldPic;
+            sm.SetEventData(sceneId, curDNum, 1, static_cast<int16_t>(x262));
+            for (int k = 2; k <= 7; ++k) sm.SetEventData(sceneId, curDNum, k, 0);
+            sm.SetEventData(sceneId, curDNum, 8, -1);
+            sm.SetEventData(sceneId, curDNum, 9, -1);
+            sm.SetEventData(sceneId, curDNum, 10, -1);
+        }
+    }
+
+    for (int slot = 0; slot < 9; ++slot) {
+        int ev = array1000[slot];
+        if (ev < 0) continue;
+        int pic = slot + 3635;
+        int col = slot % 3;
+        int row = slot / 3;
+        int ny = centerY + (col - 1);
+        int nx = centerX + (row - 1);
+        sm.SetSceneTile(sceneId, 3, nx, ny, static_cast<int16_t>(ev));
+        sm.SetEventData(sceneId, ev, 0, 1);
+        sm.SetEventData(sceneId, ev, 2, 540);
+        sm.SetEventData(sceneId, ev, 5, static_cast<int16_t>(pic));
+        sm.SetEventData(sceneId, ev, 6, static_cast<int16_t>(pic));
+        sm.SetEventData(sceneId, ev, 7, static_cast<int16_t>(pic));
+        sm.SetEventData(sceneId, ev, 8, centerXY);
+        sm.SetEventData(sceneId, ev, 9, static_cast<int16_t>(ny));
+        sm.SetEventData(sceneId, ev, 10, static_cast<int16_t>(nx));
+    }
+
+    int16_t frontEv = sm.GetSceneTile(sceneId, 3, x1, y1);
+    if (frontEv != -1) {
+        // Pascal: Sy := Y1+X223; Sx := X1+X224
+        GameManager::getInstance().setCameraPosition(x1 + x224, y1 + x223);
+        GameManager::getInstance().setMainMapPosition(x1 + x224, y1 + x223);
+    } else {
+        GameManager::getInstance().setCameraPosition(x1, y1);
+        GameManager::getInstance().setMainMapPosition(x1, y1);
+    }
+    sm.RefreshEventLayer(sceneId);
+    Instruct_Redraw();
+}
+
+void EventManager::Instruct_66(int musicnum) {
+    SoundManager::getInstance().StopMusic();
+    SoundManager::getInstance().PlayMusic(musicnum);
+}
+
+void EventManager::Instruct_67(int soundnum) {
+    SoundManager::getInstance().PlaySound(soundnum);
 }
 
 void EventManager::Instruct_Dialogue(int talkId, int headId, int mode) {
@@ -1567,6 +2210,7 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
                 case 1: GameManager::getInstance().getItem(idx3).setData(idx4 / 2, val); break;
                 case 2: SceneManager::getInstance().GetScene(idx3)->setData(idx4 / 2, val); break;
                 case 3: GameManager::getInstance().getMagic(idx3).setData(idx4 / 2, val); break;
+                case 4: GameManager::getInstance().setShopData(idx3, idx4 / 2, static_cast<int16_t>(val)); break;
             }
             break;
         }
@@ -1580,6 +2224,7 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
                 case 1: GameManager::getInstance().setX50(e5, GameManager::getInstance().getItem(idx3).getData(idx4 / 2)); break;
                 case 2: GameManager::getInstance().setX50(e5, SceneManager::getInstance().GetScene(idx3)->getData(idx4 / 2)); break;
                 case 3: GameManager::getInstance().setX50(e5, GameManager::getInstance().getMagic(idx3).getData(idx4 / 2)); break;
+                case 4: GameManager::getInstance().setX50(e5, GameManager::getInstance().getShopData(idx3, idx4 / 2)); break;
             }
             break;
         }
@@ -1673,70 +2318,15 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             int arg4 = e4;
             int arg5 = e5;
             int arg6 = e6;
-            
             if (e1 & 1) subFunc = GameManager::getInstance().getX50(e2);
             if ((e1 >> 1) & 1) arg3 = GameManager::getInstance().getX50(e3);
             if ((e1 >> 2) & 1) arg4 = GameManager::getInstance().getX50(e4);
             if ((e1 >> 3) & 1) arg5 = GameManager::getInstance().getX50(e5);
             if ((e1 >> 4) & 1) arg6 = GameManager::getInstance().getX50(e6);
-            
-            GameManager::getInstance().setX50(0x7100, arg3);
-            GameManager::getInstance().setX50(0x7101, arg4);
-            GameManager::getInstance().setX50(0x7102, arg5);
-            GameManager::getInstance().setX50(0x7103, arg6);
-            
-            std::cout << "[instruct_50e case 43] subFunc=" << subFunc 
-                      << " arg3=" << arg3 << " arg4=" << arg4 
+            std::cout << "[instruct_50e case 43] subFunc=" << subFunc
+                      << " arg3=" << arg3 << " arg4=" << arg4
                       << " arg5=" << arg5 << " arg6=" << arg6 << std::endl;
-            
-            if (subFunc == -1) {
-                Instruct_JmpScene(arg3, arg4, arg5);
-            } else if (subFunc == -2) {
-                GameManager::getInstance().setX50(0x7000, 0);
-                UIManager::getInstance().ShowDialogue(" （作詩小遊戲暫以自動通過處理）", -1, 0);
-                Instruct_Redraw();
-            } else if (subFunc == -3) {
-                GameManager::getInstance().setX50(0x7000, 1);
-                int roleId = arg3;
-                int skillIndex = arg4;
-                if (GameManager::getInstance().getRole(roleId).getMagic(skillIndex) > 0) {
-                    GameManager::getInstance().setX50(0x7000, 0);
-                }
-                std::cout << "[instruct_50e case 43 -3] role=" << roleId << " skill=" << skillIndex 
-                          << " hasSkill=" << (GameManager::getInstance().getX50(0x7000) == 0 ? "yes" : "no") << std::endl;
-            } else if (subFunc == -4) {
-                GameManager::getInstance().setX50(0x7000, 0);
-                UIManager::getInstance().ShowDialogue(" （針灸小遊戲暫以自動通過處理）", -1, 0);
-                Instruct_Redraw();
-            } else if (subFunc == -5) {
-                GameManager::getInstance().setX50(0x7000, 0);
-            } else if (subFunc == -6) {
-                GameManager::getInstance().setX50(0x7000, 0);
-            } else if (subFunc == -7) {
-                int randomEvent = GameManager::getInstance().getX50(0x6000);
-                if (randomEvent > 0) ExecuteEvent(randomEvent);
-            } else if (subFunc == -8) {
-                Instruct_Redraw();
-            } else if (subFunc == -9) {
-                GameManager::getInstance().setX50(0x7000, 0);
-            } else if (subFunc == -10) {
-                GameManager::getInstance().setX50(0x7000, 0);
-                Instruct_Redraw();
-            } else if (subFunc == -11) {
-                int roleId = arg3;
-                int def = arg4;
-                Role& role = GameManager::getInstance().getRole(roleId);
-                role.setDefence(role.getDefence() + def);
-                Instruct_Redraw();
-            } else if (subFunc == 540) {
-                GameManager::getInstance().setX50(0x7000, 0);
-                UIManager::getInstance().ShowDialogue(" （解謎小遊戲暫以自動通過處理）", -1, 0);
-            } else if (subFunc == 1055) {
-                Instruct_Redraw();
-            } else if (subFunc > 0) {
-                std::cout << "[instruct_50e case 43] Calling event " << subFunc << std::endl;
-                ExecuteEvent(subFunc);
-            }
+            HandleInstruct43Sub(subFunc, arg3, arg4, arg5, arg6);
             break;
         }
         default:

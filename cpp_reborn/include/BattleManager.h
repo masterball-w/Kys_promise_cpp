@@ -91,6 +91,7 @@ public:
     void CalPoiHurtLife(int roleIdx);
     void setForceAutoBattle(bool enabled);
     void setForceAutoBattleFrameLimit(int maxFrames);
+    bool GetPetSkill(int petIndex, int skillIndex) const;
 
 private:
     BattleManager();
@@ -107,7 +108,6 @@ private:
     int SelectAutoMode();
     int SelectAutoTarget(int roleIdx);
     void CheckBook();
-    bool GetPetSkill(int petIndex, int skillIndex) const;
     void PetEffect();
     void ShowPetEffectMessage(const std::string& text);
 

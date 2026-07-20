@@ -104,6 +104,12 @@ public:
     Magic& getMagic(int index);
     int getMagicCount() const { return (int)m_magics.size(); }
     PicImage* getHead(int index); // Get cached head image
+
+    // Shop (WeiShop / RShop): 18 int16 per shop from ranger.grp tail
+    int getShopCount() const { return (int)m_shops.size(); }
+    int16_t getShopData(int shopId, int index) const;
+    void setShopData(int shopId, int index, int16_t value);
+    void RebuildShopsFromRaw();
     
     // Global State Helpers
     void setMainMapPosition(int x, int y);
@@ -218,6 +224,7 @@ private:
     std::vector<int> m_teamList; // Stores role IDs of current party members
     std::vector<InventoryItem> m_inventory;
     std::vector<uint8_t> m_shopRaw;
+    std::vector<std::array<int16_t, 18>> m_shops;
     std::vector<int16_t> m_levelUpList;
     std::vector<std::array<int16_t, 4>> m_setNum;
     

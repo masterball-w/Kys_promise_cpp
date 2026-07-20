@@ -84,8 +84,44 @@ private:
     void Instruct_ReSetName(int type, int id, int newNameId); // instruct_69
     void Instruct_ShowTitle(int talkNum, int color); // instruct_70
     // void Instruct_JmpScene(int sceneId, int x, int y); // instruct_71 (Moved to public)
-    void Instruct_Flash(int color, int time); // instruct_16
-    void Instruct_Delay(int time); // instruct_17
+    void Instruct_Flash(int color, int time); // (legacy helper)
+    void Instruct_Delay(int time); // helper delay (not opcode 17)
+    void Instruct_15(); // fail -> title
+    void Instruct_17(int snum, int layer, int x, int y, int value); // set SData tile
+    void Instruct_51();
+    void Instruct_52();
+    void Instruct_53();
+    void Instruct_54();
+    int Instruct_55(int enum_, int value, int jump1, int jump2);
+    void Instruct_56(int repute);
+    bool Instruct_58(); // Huashan battles; false if failed to title
+    void Instruct_59();
+    int Instruct_60(int snum, int enum_, int pic, int jump1, int jump2);
+    void Instruct_63(int rnum, int sexual);
+    void Instruct_64(); // 韦小宝商店 → ShowShop(0)；原版 Pascal 为空实现
+    void HandleInstruct43Sub(int subFunc, int arg3, int arg4, int arg5, int arg6); // instruct_43 / 50e·43 共用
+    void Instruct_Puzzle(); // instruct_43 sub 540 — 场景推块解谜（非小游戏 UI）
+    void Instruct_66(int musicnum);
+    void Instruct_67(int soundnum);
+
+    int GetExecutingSceneId() const { return m_executingSceneId; }
+    int GetExecutingEventId() const { return m_executingEventId; }
+
+    // Magic / attribute / inventory helpers (kys_event.pas)
+    void StudyMagic(int rnum, int magicnum, int newmagicnum, int level, int dismode); // used by instruct_33
+    void Instruct_33(int rnum, int magicnum, int dismode);
+    void Instruct_34(int rnum, int iq);
+    void Instruct_35(int rnum, int magiclistnum, int magicnum, int exp);
+    void Instruct_37(int ethics);
+    void Instruct_41(int rnum, int inum, int amount);
+    void Instruct_22();
+    void Instruct_45(int rnum, int speed);
+    void Instruct_46(int rnum, int mp);
+    void Instruct_47(int rnum, int attack);
+    void Instruct_48(int rnum, int hp);
+    void Instruct_49(int rnum, int mpPro);
+    void ShowAttributeChangeTip(const std::string& roleNameGbk, const std::string& labelUtf8, int delta);
+    int GetMagicLevel(int person, int mnum); // -1 if not learned
     
     // Core DData/SData Modifiers
     void Instruct_UpdateEvent(int sceneId, int eventId, int index, int value); // Helper for 26, 38

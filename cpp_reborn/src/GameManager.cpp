@@ -408,6 +408,14 @@ void GameManager::loadData(const std::string& savePrefix) {
         }
         std::cout << "Loaded " << numMagics << " magics from ranger.grp" << std::endl;
     }
+
+    // 3b. Load Shops (WeiShop) — TShop = 18 * int16
+    if (TotalLen > WeiShopOffset && WeiShopOffset >= 0 && TotalLen <= (int)saveBytes.size()) {
+        int shopBytes = TotalLen - WeiShopOffset;
+        m_shopRaw.assign(dataPtr + WeiShopOffset, dataPtr + WeiShopOffset + shopBytes);
+        RebuildShopsFromRaw();
+        std::cout << "Loaded " << m_shops.size() << " shops from ranger.grp" << std::endl;
+    }
     
     // 4. Load Scenes
     // Size = MagicOffset - SceneOffset
@@ -644,7 +652,13 @@ void GameManager::SaveGame(int slot) {
         magicBytesWritten++;
     }
 
-    // 5. Write Shops (WeiShop)
+    // 5. Write Shops (WeiShop) — sync structured shops into raw first
+    if (!m_shops.empty()) {
+        m_shopRaw.resize(m_shops.size() * 18 * sizeof(int16_t));
+        for (size_t s = 0; s < m_shops.size(); ++s) {
+            std::memcpy(m_shopRaw.data() + s * 36, m_shops[s].data(), 36);
+        }
+    }
     int shopBytesToWrite = TotalLen - WeiShopOffset;
     if (shopBytesToWrite > 0) {
         if (!m_shopRaw.empty()) {
@@ -856,6 +870,7 @@ bool GameManager::LoadGame(int slot) {
         } else {
             m_shopRaw.clear();
         }
+        RebuildShopsFromRaw();
     }
 
     grpFile.close();
@@ -1179,6 +1194,10 @@ void GameManager::UpdateTitleScreen() {
                         SDL_StartTextInput(m_window);
                         m_characterCreationTextInputActive = true;
                     } else if (m_titleMenuSelection == 1) {
+                        // Capture title frame so load menu overlays like Pascal MenuLoadAtBeginning
+                        UIManager::getInstance().DrawTitleBackground();
+                        DrawTitleMenu();
+                        UIManager::getInstance().CaptureScreen();
                         if (UIManager::getInstance().ShowSaveLoadMenu(false)) {
                             m_currentState = GameState::Roaming;
                         }
@@ -2311,4 +2330,27 @@ void GameManager::Rest() {
             }
         }
     }
+}
+
+void GameManager::RebuildShopsFromRaw() {
+    m_shops.clear();
+    const size_t shopBytes = 18 * sizeof(int16_t);
+    if (m_shopRaw.size() < shopBytes) return;
+    size_t count = m_shopRaw.size() / shopBytes;
+    m_shops.resize(count);
+    for (size_t s = 0; s < count; ++s) {
+        std::memcpy(m_shops[s].data(), m_shopRaw.data() + s * shopBytes, shopBytes);
+    }
+}
+
+int16_t GameManager::getShopData(int shopId, int index) const {
+    if (shopId < 0 || shopId >= (int)m_shops.size()) return 0;
+    if (index < 0 || index >= 18) return 0;
+    return m_shops[shopId][index];
+}
+
+void GameManager::setShopData(int shopId, int index, int16_t value) {
+    if (shopId < 0 || shopId >= (int)m_shops.size()) return;
+    if (index < 0 || index >= 18) return;
+    m_shops[shopId][index] = value;
 }

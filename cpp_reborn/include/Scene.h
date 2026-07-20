@@ -17,6 +17,7 @@ public:
 
     // 1-5: Name (10 bytes = 5 words)
     std::string getName() const { return getString(1, 5); }
+    void setName(const std::string& v) { setString(1, 5, v); }
 
     // 6: ExitMusic
     int16 getExitMusic() const { return m_data[6]; }

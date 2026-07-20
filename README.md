@@ -14,8 +14,9 @@
 |------|------|
 | SDL3 渲染 / `.pic` `.grp` `.idx` 解析 | 已实现 |
 | 大地图 / 场景漫游、碰撞与事件触发 | 已实现 |
-| 事件脚本解释器（核心指令） | 大部分可用 |
-| ESC 环形菜单、物品 / 武学 / 状态 / 系统等 UI | 已实现 |
+| 事件脚本解释器（核心指令） | 大部分可用（~90%） |
+| ESC 环形菜单、物品 / 武学 / 状态 / 系统 / 商店 UI | 已实现 |
+| 小游戏（作诗/针灸/射雕/拼图/黑白棋/贪吃蛇/推块） | 主路径已迁入，细节可打磨 |
 | 战斗（移动、武学、用毒医疗、物品、AI 基础） | Alpha，持续对照原版修正 |
 | 存档读写（`R/S/D/G*.grp`） | 已实现 |
 | 音频（音乐 / 音效） | 部分可用（Windows 侧重） |
@@ -57,14 +58,20 @@
 在仓库根目录执行：
 
 ```powershell
+# 推荐：在 cpp_reborn 下构建
 cmake -S cpp_reborn -B cpp_reborn/build
 cmake --build cpp_reborn/build --config Debug --target kys_cpp
+
+# 亦可使用仓库根目录 build/（当前开发常用）
+cmake -S cpp_reborn -B build
+cmake --build build --config Debug --target kys_cpp
 ```
 
-成功后生成：
+成功后生成（按构建目录二选一）：
 
 ```text
 cpp_reborn/build/Debug/kys_cpp.exe
+build/Debug/kys_cpp.exe
 ```
 
 构建脚本会尝试将 `SDL3.dll`、`SDL3_image.dll`、`SDL3_ttf.dll` 复制到可执行文件目录。
@@ -106,6 +113,7 @@ cpp_reborn/build/Debug/
 | `kdef.idx` / `kdef.grp` | 事件脚本（**启动硬依赖**） |
 | `talk.idx` / `talk.grp` | 对话文本（**启动硬依赖**） |
 | `Background.Pic`、`Begin.Pic`、`Heads.Pic`、`Items.Pic`、`Skill.pic` | UI / 开场 / 头像 / 物品 / 技能图标 |
+| `Game.Pic` | 小游戏贴图（贪吃蛇/射雕/针灸/拼图等） |
 | `War.sta`、`warfld.idx`、`warfld.grp` | 战斗配置与战场 |
 | `name.idx` / `name.grp` | 可选：人物姓名 |
 | `Chinese.ttf` / `simkai.ttf` / `font.ttf`、`English.ttf` | 可选字体；缺省时 Windows 会尝试系统字体 |
@@ -134,6 +142,7 @@ eft/eft<三位特效编号>.pic
 |------|------|
 | `levelup.bin` | 升级经验表 |
 | `Set.bin` | 套装等配置 |
+| `Acupuncture.bin` | 针灸小游戏穴位布局（可选；缺省用回退网格） |
 
 当前实现会依次尝试 `save/list/` 与运行目录下的 `list/`。
 
@@ -166,7 +175,7 @@ cd cpp_reborn/build/Debug
 - 语言标准：C++17（以 `cpp_reborn/CMakeLists.txt` 为准）
 - 多媒体：SDL3、SDL3_image、SDL3_ttf；可选 SDL2_mixer（`USE_SDL2_MIXER`）
 - 逻辑对照：优先对齐 `kys_battle.pas`、`kys_event.pas`、`kys_engine.pas`、`kys_main.pas`
-- 更多进度见 `cpp_reborn/PROJECT_STATUS.md` 与 `cpp_reborn/doc/`
+- 进度清单（Pascal 对齐单元）见 `cpp_reborn/doc/PROGRESS.md`；摘要见 `cpp_reborn/PROJECT_STATUS.md` 与 `cpp_reborn/TODO_LIST.md`
 
 ---
 

@@ -7,6 +7,7 @@
 #include "TextManager.h"
 #include "GraphicsUtils.h"
 #include "EventManager.h"
+#include "BattleManager.h"
 #include "GameTypes.h"
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -16,6 +17,8 @@
 #include <sstream>
 #include <iomanip>
 #include <utility>
+#include <cstdlib>
+#include <ctime>
 
 namespace {
     std::string g_loadedFontPath;
@@ -3021,12 +3024,31 @@ void UIManager::ShowCharacterCreation(const Role& role) {
 }
 
 bool UIManager::ShowSaveLoadMenu(bool isSave) {
+    // Align with Pascal:
+    //   MenuLoadAtBeginning -> CommonMenu(265, 280, 107, 5)  vertical
+    //   MenuSave            -> CommonMenu(133, 30, 67, 4)    vertical
+    CaptureScreen();
+
     bool running = true;
     int currentSelection = 0;
     SDL_Event event;
-    const int SLOT_COUNT = 6;
-    const char* slots[] = { "進度一", "進度二", "進度三", "進度四", "進度五", "自動檔" };
     bool loaded = false;
+
+    const char* loadSlots[] = {
+        " 載入進度一", " 載入進度二", " 載入進度三",
+        " 載入進度四", " 載入進度五", " 載入自動檔"
+    };
+    const char* saveSlots[] = {
+        " 進度一", " 進度二", " 進度三", " 進度四", " 進度五"
+    };
+    const char** slots = isSave ? saveSlots : loadSlots;
+    const int slotCount = isSave ? 5 : 6;
+    const int maxIndex = slotCount - 1;
+
+    const int menuX = isSave ? 133 : 265;
+    const int menuY = isSave ? 30 : 280;
+    const int menuW = isSave ? 67 : 107;
+    const int menuH = maxIndex * 22 + 28;
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -3037,22 +3059,61 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
             if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.key == SDLK_ESCAPE) {
                     running = false;
-                } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_KP_6) {
-                    currentSelection = (currentSelection + 1) % SLOT_COUNT;
-                } else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_KP_4) {
-                    currentSelection = (currentSelection + SLOT_COUNT - 1) % SLOT_COUNT;
+                } else if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
+                    currentSelection = (currentSelection + 1) % slotCount;
+                } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
+                    currentSelection = (currentSelection + slotCount - 1) % slotCount;
                 } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
                     if (isSave) {
-                        GameManager::getInstance().SaveGame((currentSelection == 5) ? 6 : (currentSelection + 1));
-                        ShowDialogue("進度已保存", 0, 0); 
+                        GameManager::getInstance().SaveGame(currentSelection + 1);
+                        ShowDialogue("進度已保存", 0, 0);
+                        running = false;
                     } else {
-                        loaded = GameManager::getInstance().LoadGame((currentSelection == 5) ? 6 : (currentSelection + 1));
+                        int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
+                        loaded = GameManager::getInstance().LoadGame(slot);
                         if (loaded) {
                             running = false;
                         } else {
                             ShowDialogue("讀取失敗", 0, 0);
                         }
                     }
+                }
+            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                float mx = 0, my = 0;
+                SDL_GetMouseState(&mx, &my);
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    running = false;
+                } else if (event.button.button == SDL_BUTTON_LEFT) {
+                    if (mx >= menuX && mx < menuX + menuW &&
+                        my > menuY && my < menuY + menuH + 1) {
+                        int row = static_cast<int>((my - menuY - 2) / 22);
+                        if (row < 0) row = 0;
+                        if (row > maxIndex) row = maxIndex;
+                        currentSelection = row;
+                        if (isSave) {
+                            GameManager::getInstance().SaveGame(currentSelection + 1);
+                            ShowDialogue("進度已保存", 0, 0);
+                            running = false;
+                        } else {
+                            int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
+                            loaded = GameManager::getInstance().LoadGame(slot);
+                            if (loaded) {
+                                running = false;
+                            } else {
+                                ShowDialogue("讀取失敗", 0, 0);
+                            }
+                        }
+                    }
+                }
+            } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                float mx = 0, my = 0;
+                SDL_GetMouseState(&mx, &my);
+                if (mx >= menuX && mx < menuX + menuW &&
+                    my > menuY && my < menuY + menuH + 1) {
+                    int row = static_cast<int>((my - menuY - 2) / 22);
+                    if (row < 0) row = 0;
+                    if (row > maxIndex) row = maxIndex;
+                    currentSelection = row;
                 }
             }
         }
@@ -3061,17 +3122,17 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
         if (m_texMenuBackground) {
             SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
         } else {
-            // If no background captured, use default grey
             SDL_SetRenderDrawColor(m_renderer, 50, 50, 50, 255);
             SDL_RenderClear(m_renderer);
         }
 
-        DrawRectangle(150, 50, 340, 300, 0, 0xFFFFFFFF, 100);
-        DrawShadowTextUtf8(isSave ? "保存進度" : "讀取進度", 280, 60, 0xFFFFFFFF, 0x000000FF);
-
-        for (int i = 0; i < SLOT_COUNT; ++i) {
-            uint32_t color = (i == currentSelection) ? 0xFFFF00FF : 0xFFFFFFFF;
-            DrawShadowTextUtf8(slots[i], 170 + i * 70, 160, color, 0x000000FF);
+        // Pascal ShowCommonMenu: DrawRectangle(x, y, w, max*22+28, 0, colcolor(255), 30)
+        DrawRectangle(menuX, menuY, menuW, menuH, 0, 0xFFFFFFFF, 30);
+        for (int i = 0; i < slotCount; ++i) {
+            uint32_t color = (i == currentSelection) ? 0x64FFFFFF : 0x05FFFFFF;
+            uint32_t shadow = (i == currentSelection) ? 0x66FFFFFF : 0x07FFFFFF;
+            // Pascal: drawshadowtext(..., x - 17, y + 2 + 22 * i, ...)
+            DrawShadowTextUtf8(slots[i], menuX - 17, menuY + 2 + 22 * i, color, shadow);
         }
 
         SDL_RenderPresent(m_renderer);
@@ -3690,22 +3751,51 @@ void UIManager::UpdateScreen() {
 void UIManager::ShowShop(int shopId) {
     CaptureScreen();
     int selection = 0;
+    int mode = 0; // 0 buy, 1 sell
     bool running = true;
     SDL_Event event;
 
     struct ShopEntry { int itemId; int price; };
-    std::vector<ShopEntry> stock;
-    for (int i = 0; i < 20; ++i) {
-        int itemId = GameManager::getInstance().getX50(0x5000 + shopId * 20 + i);
-        int price = GameManager::getInstance().getX50(0x5100 + shopId * 20 + i);
-        if (itemId > 0 && price >= 0) stock.push_back({itemId, price});
-    }
-    if (stock.empty()) {
-        for (int itemId = 1; itemId <= 10; ++itemId) {
-            Item& item = GameManager::getInstance().getItem(itemId);
-            if (!item.getName().empty()) stock.push_back({itemId, item.getPrice()});
+    auto buildBuyStock = [&]() -> std::vector<ShopEntry> {
+        std::vector<ShopEntry> stock;
+        for (int i = 0; i < 20; ++i) {
+            int itemId = GameManager::getInstance().getX50(0x5000 + shopId * 20 + i);
+            int price = GameManager::getInstance().getX50(0x5100 + shopId * 20 + i);
+            if (itemId > 0 && price >= 0) stock.push_back({itemId, price});
         }
-    }
+        if (stock.empty() && shopId >= 0 && shopId < GameManager::getInstance().getShopCount()) {
+            for (int i = 0; i < 18; ++i) {
+                int itemId = GameManager::getInstance().getShopData(shopId, i);
+                if (itemId <= 0 || itemId >= GameManager::getInstance().getItemCount()) continue;
+                Item& item = GameManager::getInstance().getItem(itemId);
+                if (item.getName().empty()) continue;
+                int price = item.getPrice();
+                if (price < 0) price = 0;
+                stock.push_back({itemId, price});
+            }
+        }
+        if (stock.empty()) {
+            for (int itemId = 1; itemId <= 10 && itemId < GameManager::getInstance().getItemCount(); ++itemId) {
+                Item& item = GameManager::getInstance().getItem(itemId);
+                if (!item.getName().empty() && item.getPrice() > 0)
+                    stock.push_back({itemId, item.getPrice()});
+            }
+        }
+        return stock;
+    };
+    auto buildSellStock = [&]() -> std::vector<ShopEntry> {
+        std::vector<ShopEntry> stock;
+        for (const auto& it : GameManager::getInstance().getItemList()) {
+            if (it.id <= 0 || it.amount <= 0) continue;
+            Item& item = GameManager::getInstance().getItem(it.id);
+            int price = item.getPrice() / 2;
+            if (price < 0) price = 0;
+            stock.push_back({it.id, price});
+        }
+        return stock;
+    };
+
+    std::vector<ShopEntry> stock = buildBuyStock();
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -3715,13 +3805,18 @@ void UIManager::ShowShop(int shopId) {
             }
             if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.key == SDLK_ESCAPE) running = false;
-                if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
+                else if (event.key.key == SDLK_TAB || event.key.key == SDLK_LEFT || event.key.key == SDLK_RIGHT) {
+                    mode = 1 - mode;
+                    selection = 0;
+                    stock = (mode == 0) ? buildBuyStock() : buildSellStock();
+                } else if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
                     if (!stock.empty()) selection = (selection + 1) % (int)stock.size();
                 } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
                     if (!stock.empty()) selection = (selection + (int)stock.size() - 1) % (int)stock.size();
                 } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
-                    if (!stock.empty()) {
-                        const ShopEntry& entry = stock[selection];
+                    if (stock.empty()) continue;
+                    const ShopEntry& entry = stock[selection];
+                    if (mode == 0) {
                         int money = GameManager::getInstance().getItemAmount(0);
                         if (money >= entry.price) {
                             GameManager::getInstance().AddItem(entry.itemId, 1);
@@ -3730,6 +3825,12 @@ void UIManager::ShowShop(int shopId) {
                         } else {
                             ShowDialogue(" 銀兩不足", -1, 0);
                         }
+                    } else if (GameManager::getInstance().getItemAmount(entry.itemId) > 0) {
+                        GameManager::getInstance().AddItem(entry.itemId, -1);
+                        GameManager::getInstance().AddItem(0, entry.price);
+                        ShowDialogue(" 出售成功 ＋" + std::to_string(entry.price), -1, 0);
+                        stock = buildSellStock();
+                        if (selection >= (int)stock.size()) selection = std::max(0, (int)stock.size() - 1);
                     }
                 }
             }
@@ -3738,22 +3839,72 @@ void UIManager::ShowShop(int shopId) {
         SDL_RenderClear(m_renderer);
         if (m_texMenuBackground) SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
         DrawRectangle(80, 60, 480, 320, 0, 0xFFFFFFFF, 40);
-        DrawShadowTextUtf8(" 商店", 100, 70, 0xFFFF00FF, 0x000000FF);
+        DrawShadowTextUtf8(mode == 0 ? " 商店·購入" : " 商店·賣出", 100, 70, 0xFFFF00FF, 0x000000FF);
         std::string moneyStr = " 銀兩：" + std::to_string(GameManager::getInstance().getItemAmount(0));
-        DrawShadowTextUtf8(moneyStr, 400, 70, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(moneyStr, 380, 70, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(" Tab/←→ 切換買/賣", 100, 95, 0xAAAAAAFF, 0x000000FF);
 
-        for (size_t i = 0; i < stock.size(); ++i) {
+        size_t shown = std::min(stock.size(), (size_t)10);
+        for (size_t i = 0; i < shown; ++i) {
             Item& item = GameManager::getInstance().getItem(stock[i].itemId);
             std::string line = TextManager::getInstance().gbkToUtf8(item.getName()) +
                 "  $" + std::to_string(stock[i].price);
+            if (mode == 1) line += " x" + std::to_string(GameManager::getInstance().getItemAmount(stock[i].itemId));
             uint32_t color = ((int)i == selection) ? 0xFFFF00FF : 0xFFFFFFFF;
-            DrawShadowTextUtf8(line, 100, 110 + (int)i * 22, color, 0x000000FF);
+            DrawShadowTextUtf8(line, 100, 120 + (int)i * 22, color, 0x000000FF);
         }
         if (stock.empty()) {
-            DrawShadowTextUtf8(" （此商店暫無商品）", 100, 110, 0xFFFFFFFF, 0x000000FF);
+            DrawShadowTextUtf8(mode == 0 ? " （此商店暫無商品）" : " （背包無可賣物品）", 100, 120, 0xFFFFFFFF, 0x000000FF);
         }
-        DrawShadowTextUtf8(" 空格/回車購買  ESC離開", 100, 340, 0xAAAAAAFF, 0x000000FF);
+        DrawShadowTextUtf8(" 空格/回車確認  ESC離開", 100, 350, 0xAAAAAAFF, 0x000000FF);
         SDL_RenderPresent(m_renderer);
         SDL_Delay(16);
     }
+}
+
+bool UIManager::RunMiniGame(const std::string& titleUtf8, const std::string& hintUtf8, int chancePercent) {
+    static bool seeded = false;
+    if (!seeded) {
+        std::srand(static_cast<unsigned>(std::time(nullptr)));
+        seeded = true;
+    }
+    CaptureScreen();
+    int chance = chancePercent;
+    if (BattleManager::getInstance().GetPetSkill(4, 2)) {
+        chance = std::min(95, chance * 2);
+    }
+    if (chance < 5) chance = 5;
+    if (chance > 95) chance = 95;
+
+    bool decided = false;
+    bool success = false;
+    SDL_Event event;
+    while (!decided) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                GameManager::getInstance().Quit();
+                return false;
+            }
+            if (event.type == SDL_EVENT_KEY_DOWN) {
+                if (event.key.key == SDLK_ESCAPE) {
+                    success = false;
+                    decided = true;
+                } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
+                    success = ((std::rand() % 100) < chance);
+                    decided = true;
+                }
+            }
+        }
+        SDL_RenderClear(m_renderer);
+        if (m_texMenuBackground) SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
+        DrawRectangle(100, 100, 440, 220, 0, 0xFFFFFFFF, 40);
+        DrawShadowTextUtf8(titleUtf8, 120, 120, 0xFFFF00FF, 0x000000FF);
+        DrawShadowTextUtf8(hintUtf8, 120, 160, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(" 成功率約 " + std::to_string(chance) + "%", 120, 200, 0xAAAAAAAA, 0x000000FF);
+        DrawShadowTextUtf8(" 空格/回車：挑戰　　ESC：放棄(失敗)", 120, 250, 0xAAAAAAFF, 0x000000FF);
+        SDL_RenderPresent(m_renderer);
+        SDL_Delay(16);
+    }
+    ShowDialogue(success ? " 挑戰成功！" : " 挑戰失敗…", -1, 0);
+    return success;
 }
