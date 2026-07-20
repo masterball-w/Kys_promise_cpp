@@ -5,14 +5,16 @@
 .idea/
 cursor/
 
-# --- Build outputs ---
-build/
-cpp_reborn/build/*
-!cpp_reborn/build/.gitkeep
+# --- Build outputs (ONLY repository-root build/) ---
+# Canonical: cmake -S cpp_reborn -B build
+/build/
 **/CMakeCache.txt
 **/CMakeFiles/
 **/cmake_install.cmake
 **/compile_commands.json
+# Do not keep a second tree under cpp_reborn/build
+/cpp_reborn/build/
+
 # Only ignore VS layout folders at repo root / under cpp_reborn (do NOT ignore SDL*/lib/x64)
 /[Dd]ebug/
 /[Rr]elease/

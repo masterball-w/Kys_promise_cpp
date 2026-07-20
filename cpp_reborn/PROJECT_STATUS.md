@@ -2,7 +2,8 @@
 
 **Last Updated:** 2026-07-20  
 **Status:** Alpha 0.6 / Core Loop + Shop + Little Games  
-**详细对齐清单:** [doc/PROGRESS.md](doc/PROGRESS.md)（以 Pascal 函数为单元）
+**详细对齐清单:** [doc/PROGRESS.md](doc/PROGRESS.md)（以 Pascal 函数为单元）  
+**构建约定:** 源码 `cpp_reborn/` → 唯一产物目录仓库根 `build/`（见根目录 `CMakePresets.json` / `README.md`）
 
 ## 1. Completed Systems
 

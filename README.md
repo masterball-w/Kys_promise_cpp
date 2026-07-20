@@ -33,7 +33,10 @@
 │   ├── include/
 │   ├── src/
 │   ├── tests/
-│   └── doc/
+│   ├── doc/
+│   ├── CMakeLists.txt
+│   └── CMakePresets.json  # binaryDir → 仓库根 build/
+├── build/               # 唯一构建输出（gitignore；勿使用 cpp_reborn/build）
 ├── SDL3-3.4.0/          # 预置 SDL3（Windows 开发便利）
 ├── SDL3_image-3.2.6/
 ├── SDL3_ttf-3.1.0/
@@ -41,6 +44,8 @@
 ├── kys_*.pas            # 原版 Pascal 参考实现
 └── README.md
 ```
+
+**构建约定：** 源码在 `cpp_reborn/`，产物只进仓库根目录 `build/`。不要再创建或使用 `cpp_reborn/build/`。
 
 ---
 
@@ -55,22 +60,23 @@
 
 ## 编译
 
-在仓库根目录执行：
+在仓库根目录执行（**唯一官方路径**）：
 
 ```powershell
-# 推荐：在 cpp_reborn 下构建
-cmake -S cpp_reborn -B cpp_reborn/build
-cmake --build cpp_reborn/build --config Debug --target kys_cpp
-
-# 亦可使用仓库根目录 build/（当前开发常用）
-cmake -S cpp_reborn -B build
+cmake -S cpp_reborn -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Debug --target kys_cpp
 ```
 
-成功后生成（按构建目录二选一）：
+也可使用 `cpp_reborn/CMakePresets.json`（产物仍写入根目录 `build/`）：
+
+```powershell
+cmake --preset default -S cpp_reborn
+cmake --build build --config Debug --target kys_cpp
+```
+
+成功后生成：
 
 ```text
-cpp_reborn/build/Debug/kys_cpp.exe
 build/Debug/kys_cpp.exe
 ```
 
@@ -83,7 +89,7 @@ build/Debug/kys_cpp.exe
 引擎会在可执行文件附近自动查找以 `smp` 为标志的 `resource/` 目录。推荐将资源放在：
 
 ```text
-cpp_reborn/build/Debug/
+build/Debug/
 ├── kys_cpp.exe
 ├── SDL3.dll
 ├── SDL3_image.dll
@@ -162,7 +168,7 @@ sound/e<三位编号>.wav
 ## 运行
 
 ```powershell
-cd cpp_reborn/build/Debug
+cd build/Debug
 .\kys_cpp.exe
 ```
 

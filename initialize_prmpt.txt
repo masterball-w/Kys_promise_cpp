@@ -132,12 +132,12 @@ uint32_t color = (paletteIndex << 24) | 0xFFFFFF;
 ## 常用命令
 
 ```bash
-# 构建
-cd cpp_reborn/build
-cmake --build . --config Release
+# 构建（唯一构建目录：仓库根 build/）
+cmake -S cpp_reborn -B build
+cmake --build build --config Debug --target kys_cpp
 
 # 运行
-./Release/test_scene_trigger.exe
+./build/Debug/kys_cpp.exe
 ```
 
 ## 参考文件
