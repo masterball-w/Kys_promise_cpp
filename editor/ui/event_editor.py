@@ -18,6 +18,7 @@ from kys_formats.opcode_zh import (
     format_opcode_choice,
     parse_opcode_choice,
     known_opcodes,
+    default_args_for_opcode,
 )
 from ui.context import EditorContext
 
@@ -61,8 +62,8 @@ class EventEditorWidget(QWidget):
 
         right = QVBoxLayout()
         hint = QLabel(
-            "Opcode 栏可直接输入数字，或从下拉框选择「编码 — 中文释义」。"
-            "名称栏只读同步；悬停「名称/参数」可查看参数映射（对话、物品、角色等）。"
+            "Opcode 栏可输入数字或下拉选择「编码 — 中文」。"
+            "底部可从全部指令中搜索并插入；悬停名称/参数可查看映射。"
         )
         hint.setWordWrap(True)
         right.addWidget(hint)
@@ -86,18 +87,39 @@ class EventEditorWidget(QWidget):
         right.addWidget(self.arg_preview)
 
         ops = QHBoxLayout()
-        for text, slot in [
-            ("添加对话(1)", lambda: self._add_op(1, [1, 0, 0])),
-            ("添加物品(2)", lambda: self._add_op(2, [0, 1])),
-            ("添加战斗(6)", lambda: self._add_op(6, [0, 0, 0, 1])),
-            ("重绘(0)", lambda: self._add_op(0, [])),
-            ("淡出(14)", lambda: self._add_op(14, [])),
-            ("新对话(68)", lambda: self._add_op(68, [0, 1, -2, 0, 0, 28515, 0])),
-            ("删除行", self._del_ins),
-        ]:
-            b = QPushButton(text)
-            b.clicked.connect(slot)
-            ops.addWidget(b)
+        ops.addWidget(QLabel("插入指令:"))
+        self.add_op_combo = QComboBox()
+        self.add_op_combo.setEditable(True)
+        self.add_op_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.add_op_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.add_op_combo.setMinimumContentsLength(22)
+        self.add_op_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        for op in self._opcode_choices:
+            if op < 0:
+                continue  # END 一般由脚本自带，不从这里插
+            self.add_op_combo.addItem(format_opcode_choice(op), op)
+        completer = QCompleter(self.add_op_combo.model(), self.add_op_combo)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.add_op_combo.setCompleter(completer)
+        # default to 显示对话
+        idx = self.add_op_combo.findData(1)
+        if idx >= 0:
+            self.add_op_combo.setCurrentIndex(idx)
+        ops.addWidget(self.add_op_combo, 1)
+
+        insert_btn = QPushButton("插入")
+        insert_btn.setToolTip("在当前行之后插入；若选中结束行或未选中，则插在结束指令之前")
+        insert_btn.clicked.connect(self._insert_from_combo)
+        ops.addWidget(insert_btn)
+        self.add_op_combo.lineEdit().returnPressed.connect(self._insert_from_combo)
+
+        del_btn = QPushButton("删除行")
+        del_btn.clicked.connect(self._del_ins)
+        ops.addWidget(del_btn)
         right.addLayout(ops)
         save_btn = QPushButton("应用并写回 Kdef")
         save_btn.clicked.connect(self._save_script)
@@ -294,9 +316,21 @@ class EventEditorWidget(QWidget):
             instructions.append(Instruction(op, args))
         return Script(self.current_script_id, instructions=instructions)
 
-    def _add_op(self, opcode: int, args: list) -> None:
+    def _add_op(self, opcode: int, args: list | None = None) -> None:
+        if args is None:
+            args = default_args_for_opcode(opcode)
+        cur = self.ins_table.currentRow()
         r = self.ins_table.rowCount()
-        if r > 0:
+        if cur >= 0:
+            # Insert after current row; if current is END, insert before it
+            try:
+                if self._row_opcode(cur) < 0:
+                    r = cur
+                else:
+                    r = cur + 1
+            except Exception:
+                r = cur + 1
+        elif r > 0:
             try:
                 last_op = self._row_opcode(r - 1)
                 if last_op < 0:
@@ -308,6 +342,21 @@ class EventEditorWidget(QWidget):
         self._fill_instruction_row(r, opcode, list(args), "")
         self.ins_table.blockSignals(False)
         self.ins_table.setCurrentCell(r, 3)
+
+    def _insert_from_combo(self) -> None:
+        try:
+            opcode = parse_opcode_choice(self.add_op_combo.currentText())
+        except ValueError:
+            QMessageBox.warning(self, "插入", "无法解析所选指令")
+            return
+        if opcode < 0:
+            QMessageBox.information(self, "插入", "结束指令一般保留在脚本末尾，请直接改某行为结束")
+            return
+        # Snap combo to known label when possible
+        idx = self.add_op_combo.findData(opcode)
+        if idx >= 0:
+            self.add_op_combo.setCurrentIndex(idx)
+        self._add_op(opcode)
 
     def _del_ins(self) -> None:
         r = self.ins_table.currentRow()

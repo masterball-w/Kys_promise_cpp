@@ -272,6 +272,30 @@ def known_opcodes() -> List[int]:
     return sorted(ops)
 
 
+def default_args_for_opcode(opcode: int) -> List[int]:
+    """Sensible starter args when inserting a new instruction."""
+    from kys_formats.kdef import OPCODE_ARGC
+
+    presets = {
+        1: [1, 0, 0],
+        2: [0, 1],
+        4: [0, 1, 1],
+        5: [1, 1],
+        6: [0, 0, 0, 1],
+        9: [1, 1],
+        11: [1, 1],
+        16: [0, 1, 1],
+        18: [0, 1, 1],
+        20: [1, 1],
+        68: [0, 1, -2, 0, 0, 28515, 0],
+    }
+    if opcode in presets:
+        return list(presets[opcode])
+    if opcode < 0:
+        return []
+    return [0] * OPCODE_ARGC.get(opcode, 0)
+
+
 def arg_specs(opcode: int) -> List[ArgSpec]:
     return list(OPCODE_ARGS.get(opcode, []))
 
