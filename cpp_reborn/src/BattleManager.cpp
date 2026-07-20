@@ -707,6 +707,7 @@ bool BattleManager::StartBattle(int battleId, int getExp) {
         std::cerr << "Failed to load BattleField" << std::endl;
     }
 
+    ClearGongtiStackAttack();
     m_battleRoles.clear();
     std::vector<int> candidates;
     const auto& team = GameManager::getInstance().getTeamList();
@@ -917,6 +918,8 @@ void BattleManager::CheckLevelUp() {
 }
 
 void BattleManager::RestoreRoleStatus() {
+    ClearGongtiStackAttack();
+
     for (const auto& role : m_battleRoles) {
         int rnum = role.getRNum();
         if (rnum < 0) continue;
@@ -944,6 +947,86 @@ void BattleManager::RestoreRoleStatus() {
              r.setCurrentMP(r.getMaxMP());
              r.setPhyPower(MAX_PHYSICAL_POWER * 9 / 10);
         }
+    }
+}
+
+void BattleManager::ClearGongtiStackAttack() {
+    for (auto& br : m_battleRoles) {
+        int stacks = br.getGongtiAtkStacks();
+        if (stacks <= 0) continue;
+        int rnum = br.getRNum();
+        if (rnum >= 0) {
+            Role& r = GameManager::getInstance().getRole(rnum);
+            int atk = static_cast<int>(r.getAttack()) - stacks * 10;
+            r.setAttack(static_cast<int16_t>(std::max(0, atk)));
+        }
+        br.setGongtiAtkStacks(0);
+        br.setGongtiAtkStopped(false);
+    }
+}
+
+void BattleManager::ApplyGongtiStackAttack(int roleIdx) {
+    if (roleIdx < 0 || roleIdx >= (int)m_battleRoles.size()) return;
+    BattleRole& actor = m_battleRoles[roleIdx];
+    int rnum = actor.getRNum();
+    if (rnum < 0 || actor.getDead()) return;
+
+    const bool has26 = GameManager::getInstance().CheckBattleEffect(
+        rnum, BattleEffectType::Stack_Attack);
+
+    if (has26) {
+        if (!actor.isGongtiAtkStopped() && actor.getGongtiAtkStacks() < 10) {
+            actor.setGongtiAtkStacks(actor.getGongtiAtkStacks() + 1);
+            Role& role = GameManager::getInstance().getRole(rnum);
+            role.setAttack(static_cast<int16_t>(role.getAttack() + 10));
+            for (auto& br : m_battleRoles) br.setShowNumber(-1);
+            actor.setShowNumber(10);
+            ShowHurtValue("攻击", 0x05FFFFFF, 0x07FFFFFF);
+        }
+    } else if (actor.getGongtiAtkStacks() > 0) {
+        // Mid-battle loss of state 26: keep bonus, stop further stacks
+        actor.setGongtiAtkStopped(true);
+    }
+}
+
+void BattleManager::ApplyGongtiAuraPoison(int roleIdx) {
+    if (roleIdx < 0 || roleIdx >= (int)m_battleRoles.size()) return;
+    BattleRole& actor = m_battleRoles[roleIdx];
+    int rnum = actor.getRNum();
+    if (rnum < 0 || actor.getDead()) return;
+    if (!GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::Aura_Poison)) {
+        return;
+    }
+
+    const int ax = actor.getX();
+    const int ay = actor.getY();
+    bool any = false;
+    for (auto& br : m_battleRoles) br.setShowNumber(-1);
+
+    for (int i = 0; i < (int)m_battleRoles.size(); ++i) {
+        if (i == roleIdx) continue;
+        BattleRole& enemy = m_battleRoles[i];
+        if (enemy.getDead() || enemy.getRNum() < 0) continue;
+        if (enemy.getTeam() == actor.getTeam()) continue;
+        // 7x7 centered on actor => Chebyshev distance <= 3
+        if (std::abs(enemy.getX() - ax) > 3 || std::abs(enemy.getY() - ay) > 3) continue;
+
+        Role& tData = GameManager::getInstance().getRole(enemy.getRNum());
+        if (GameManager::getInstance().CheckBattleEffect(enemy.getRNum(), BattleEffectType::Ignore_Debuff) ||
+            CheckEquipSet(tData.getEquip(0), tData.getEquip(1), tData.getEquip(2), tData.getEquip(3)) == 4) {
+            continue;
+        }
+
+        int newPoi = std::min(99, static_cast<int>(tData.getPoision()) + 10);
+        int added = newPoi - tData.getPoision();
+        if (added <= 0) continue;
+        tData.setPoision(static_cast<int16_t>(newPoi));
+        enemy.setShowNumber(added);
+        any = true;
+    }
+
+    if (any) {
+        ShowHurtValue(2);
     }
 }
 
@@ -1037,6 +1120,8 @@ void BattleManager::RunBattle() {
                         if (add > 0) ShowHurtValue(1);
                         role.setCurrentMP(role.getCurrentMP() + add);
                     }
+                    // State 26: stack +10 attack (max 10), keep on gongti switch but stop growing
+                    ApplyGongtiStackAttack(actorIdx);
                 }
                 CalPoiHurtLife(actorIdx);
                 actor.setLifeAdd(1);
@@ -1048,6 +1133,7 @@ void BattleManager::RunBattle() {
                 actor.setProgress(0);
                 actor.setRound(actor.getRound() + 1);
                 actor.setLifeAdd(0);
+                ApplyGongtiAuraPoison(actorIdx);
                 continue;
             } else if (actor.getFrozen() <= 0) {
                 actor.setFrozen(0);
@@ -1076,6 +1162,7 @@ void BattleManager::RunBattle() {
                     AutoBattle(actorIdx);
                     if (actor.getActed() == 1) {
                         actor.setProgress(0);
+                        ApplyGongtiAuraPoison(actorIdx);
                     }
                 } else {
                     actor.setActed(0);
@@ -1174,6 +1261,7 @@ void BattleManager::RunBattle() {
                             actor.setProgress(0);
                             actor.setRound(actor.getRound() + 1);
                             actor.setLifeAdd(0);
+                            ApplyGongtiAuraPoison(actorIdx);
                         }
                     }
                 }
@@ -1186,6 +1274,7 @@ void BattleManager::RunBattle() {
                     actor.setProgress(0);
                     actor.setRound(actor.getRound() + 1);
                     actor.setLifeAdd(0);
+                    ApplyGongtiAuraPoison(actorIdx);
                 }
             }
             
@@ -1986,6 +2075,9 @@ void BattleManager::Medcine(int roleIdx) {
     
     int med = GetRoleMedcine(rnum, true);
     int step = med / 15 + 1;
+    if (GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::Boost_Med_Detox)) {
+        step += 2;
+    }
     bool manualSelect = (actor.getTeam() == 0 && actor.getAuto() == -1);
     if (manualSelect) {
         if (!SelectAim(roleIdx, step)) return;
@@ -2017,6 +2109,9 @@ void BattleManager::ApplyMedicine(int healerIdx, int targetIdx) {
     
     if (target.getHurt() - med > 20) healVal = 0;
     if (healVal < 0) healVal = 0;
+    if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), BattleEffectType::Boost_Med_Detox)) {
+        healVal = healVal * 3 / 2;
+    }
     
     int maxHeal = target.getMaxHP() - target.getCurrentHP();
     healVal = std::min(healVal, maxHeal);
@@ -2039,6 +2134,9 @@ void BattleManager::ApplyMedicine(int healerIdx, int targetIdx) {
             int areaHeal = med * (10 - allyRole.getHurt() / 15) / 10;
             if (allyRole.getHurt() - med > 20) areaHeal = 0;
             if (areaHeal < 0) areaHeal = 0;
+            if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), BattleEffectType::Boost_Med_Detox)) {
+                areaHeal = areaHeal * 3 / 2;
+            }
             areaHeal = std::min(areaHeal, (int)allyRole.getMaxHP() - (int)allyRole.getCurrentHP());
             if (areaHeal > 0) {
                 actor.setExpGot(actor.getExpGot() + std::max(0, areaHeal / 10));
@@ -2128,6 +2226,9 @@ void BattleManager::MedPoision(int roleIdx) {
     
     int medpoi = GetRoleMedPoi(rnum, true);
     int step = medpoi / 15 + 1;
+    if (GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::Boost_Med_Detox)) {
+        step += 2;
+    }
     bool manualSelect = (actor.getTeam() == 0 && actor.getAuto() == -1);
     if (manualSelect) {
         if (!SelectAim(roleIdx, step)) return;
@@ -2162,6 +2263,10 @@ void BattleManager::ApplyMedPoision(int healerIdx, int targetIdx) {
     else if (minuspoi > currentPoi) minuspoi = currentPoi;
     
     minuspoi = std::min(minuspoi, currentPoi);
+    if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), BattleEffectType::Boost_Med_Detox)) {
+        minuspoi = minuspoi * 3 / 2;
+        minuspoi = std::min(minuspoi, currentPoi);
+    }
     
     if (minuspoi > 0) {
         actor.setExpGot(actor.getExpGot() + std::max(0, minuspoi / 5));
@@ -2184,6 +2289,10 @@ void BattleManager::ApplyMedPoision(int healerIdx, int targetIdx) {
             if (areaMinus < allyPoi / 2) areaMinus = 0;
             else if (areaMinus > allyPoi) areaMinus = allyPoi;
             areaMinus = std::min(areaMinus, allyPoi);
+            if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), BattleEffectType::Boost_Med_Detox)) {
+                areaMinus = areaMinus * 3 / 2;
+                areaMinus = std::min(areaMinus, allyPoi);
+            }
             if (areaMinus > 0) {
                 actor.setExpGot(actor.getExpGot() + std::max(0, areaMinus / 5));
             }

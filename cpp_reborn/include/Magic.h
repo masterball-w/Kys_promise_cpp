@@ -130,6 +130,7 @@ public:
 
     // 76: BattleState
     int16 getBattleState() const { return m_data[76]; }
+    void setBattleState(int16 v) { m_data[76] = v; }
 
     // 80: MaxLevel
     int16 getMaxLevel() const { return m_data[80]; }

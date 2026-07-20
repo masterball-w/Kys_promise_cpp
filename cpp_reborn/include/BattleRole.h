@@ -93,6 +93,12 @@ public:
     void setFlashTimer(int value) { m_flashTimer = value; }
     void decFlashTimer() { if (m_flashTimer > 0) m_flashTimer--; }
 
+    // State 26: stacked attack from gongti/equip (battle-only; cleared after battle)
+    int getGongtiAtkStacks() const { return m_gongtiAtkStacks; }
+    void setGongtiAtkStacks(int v) { m_gongtiAtkStacks = v; }
+    bool isGongtiAtkStopped() const { return m_gongtiAtkStopped; }
+    void setGongtiAtkStopped(bool v) { m_gongtiAtkStopped = v; }
+
     int16_t getLevel() const;
 
 private:
@@ -128,6 +134,8 @@ private:
     };
 
     int m_flashTimer = 0;
+    int m_gongtiAtkStacks = 0;      // 0..10, each stack = +10 Attack applied to Role
+    bool m_gongtiAtkStopped = false; // true after mid-battle loss of state 26
 };
 
 #endif

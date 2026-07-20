@@ -8,6 +8,7 @@
 #include "GraphicsUtils.h"
 #include "EventManager.h"
 #include "BattleManager.h"
+#include "BattleEffects.h"
 #include "GameTypes.h"
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -1413,6 +1414,15 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
                         attrIdx++;
                     }
                 }
+                if (m.getBattleState() > 0 && gLevel == m.getMaxLevel()) {
+                    std::string stateName = GetBattleEffectDisplayName(m.getBattleState());
+                    if (!stateName.empty()) {
+                        DrawShadowTextUtf8(" " + stateName,
+                            x + 248 + textOffsetX,
+                            attrY + ((attrIdx + 1) / 2) * 22,
+                            0x63FFFFFF, 0x66FFFFFF);
+                    }
+                }
             }
         }
     } else if (selectedIndex >= 0 && selectedIndex < 6) {
@@ -1624,6 +1634,9 @@ void UIManager::MenuMedcine(int healerId) {
                             int med = game.GetRoleMedcine(healerId, true);
                             int addlife = med * (10 - target.getHurt() / 15) / 10;
                             if (target.getHurt() - med > 20) addlife = 0;
+                            if (game.CheckBattleEffect(healerId, BattleEffectType::Boost_Med_Detox)) {
+                                addlife = addlife * 3 / 2;
+                            }
                             int cureHurt = addlife / LIFE_HURT;
                             target.setHurt(std::max(0, target.getHurt() - cureHurt));
                             int maxHeal = target.getMaxHP() - target.getCurrentHP();
@@ -1686,6 +1699,10 @@ void UIManager::MenuMedPoision(int healerId) {
                             int currentPoi = target.getPoision();
                             if (minuspoi < currentPoi / 2) minuspoi = 0;
                             else if (minuspoi > currentPoi) minuspoi = currentPoi;
+                            if (game.CheckBattleEffect(healerId, BattleEffectType::Boost_Med_Detox)) {
+                                minuspoi = minuspoi * 3 / 2;
+                                minuspoi = std::min(minuspoi, currentPoi);
+                            }
                             target.setPoision(currentPoi - minuspoi);
                             if (minuspoi > 0) {
                                 if (!game.GetEquipState(healerId, 1) && !game.GetGongtiState(healerId, 1)) {
@@ -2818,6 +2835,12 @@ void UIManager::ShowItem(int menuSelection, int selectedIndex, bool inSubmenu) {
                 addAddPart(addParts, "道德", item.getAddEthics());
                 addAddPart(addParts, "连击", item.getAddAttTwice());
                 addAddPart(addParts, "毒攻", item.getAddAttPoi());
+                if (item.getBattleEffect() > 0) {
+                    std::string effectName = GetBattleEffectDisplayName(item.getBattleEffect());
+                    if (!effectName.empty()) {
+                        lines.push_back("装备特效：" + effectName);
+                    }
+                }
                 if (!addParts.empty()) {
                     lines.push_back("加成 " + joinParts(addParts));
                 }
@@ -2845,6 +2868,12 @@ void UIManager::ShowItem(int menuSelection, int selectedIndex, bool inSubmenu) {
                     addAddPart(addParts, "暗器", mg.getAddHidWeapon());
                     if (!addParts.empty()) {
                         lines.push_back("修炼加成 " + joinParts(addParts));
+                    }
+                    if (mg.getBattleState() > 0) {
+                        std::string stateName = GetBattleEffectDisplayName(mg.getBattleState());
+                        if (!stateName.empty()) {
+                            lines.push_back("功体特效：" + stateName);
+                        }
                     }
                 }
             } else {

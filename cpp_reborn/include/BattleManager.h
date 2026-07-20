@@ -89,6 +89,9 @@ public:
     // Core Logic
     void CalHurtRole(int attackerIdx, int magicId, int level);
     void CalPoiHurtLife(int roleIdx);
+    void ApplyGongtiStackAttack(int roleIdx);   // State 26 at turn start
+    void ApplyGongtiAuraPoison(int roleIdx);    // State 27 at action end
+    void ClearGongtiStackAttack();              // State 26 cleanup after battle
     void setForceAutoBattle(bool enabled);
     void setForceAutoBattleFrameLimit(int maxFrames);
     bool GetPetSkill(int petIndex, int skillIndex) const;
