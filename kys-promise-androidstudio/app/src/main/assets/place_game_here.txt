@@ -1,0 +1,6 @@
+将完整 game_data（resource/save/fight/…）拷到本应用外部存储目录后启动游戏。
+
+推荐路径（随设备略有差异）：
+  Android/data/org.libsdl.kys_promise/files/game_data/
+
+详见仓库根目录 ANDROID.md。

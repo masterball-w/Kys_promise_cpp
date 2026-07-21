@@ -1,85 +1,110 @@
 #include "FileLoader.h"
+#include "PlatformCompat.h"
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <vector>
 
 const std::string RESOURCE_DIR = "resource/";
 
-std::string FileLoader::getResourcePath(const std::string& filename) {
-    static std::string resourcePrefix = "";
-    static bool initialized = false;
-    
-    // If input is absolute path, use it directly
-    if (filename.find(":") != std::string::npos || filename.find("/") == 0 || filename.find("\\") == 0) {
-        return filename;
-    }
+namespace {
+std::string g_dataRoot;
+std::string g_resourcePrefix;
+bool g_pathInit = false;
 
-    if (!initialized) {
-        // Candidates for resource directory
+void ensurePathInit() {
+    if (g_pathInit) return;
+    g_dataRoot = PlatformCompat::discoverDataRoot();
+    std::filesystem::path root(g_dataRoot);
+    std::error_code ec;
+    std::filesystem::path res = root / "resource";
+    if (std::filesystem::is_directory(res, ec)) {
+        g_resourcePrefix = res.string();
+        if (!g_resourcePrefix.empty() && g_resourcePrefix.back() != '/' && g_resourcePrefix.back() != '\\') {
+            g_resourcePrefix.push_back('/');
+        }
+    } else {
+        // Legacy: probe relative resource/ like before
         std::vector<std::string> candidates = {
             "resource",
             "../resource",
             "../../resource",
             "../../../resource",
-            "Debug/resource",
-            "build/Debug/resource",
-            "build/Release/resource",
-            "cpp_reborn/resource",
-            "cpp_reborn/build/Debug/resource",
-            "cpp_reborn/build/Release/resource",
-            "../cpp_reborn/resource",
-            "../cpp_reborn/build/Debug/resource",
-            "../cpp_reborn/build/Release/resource"
+            "game_data/resource",
+            "../game_data/resource",
+            "../../game_data/resource",
         };
- 
-         // 1. Try to find a resource dir that contains key file 'smp'
-         for (const auto& dir : candidates) {
-             std::string testPath = dir + "/smp";
-             std::ifstream f(testPath.c_str());
-             if (f.good()) {
-                 resourcePrefix = dir + "/";
-                 break;
-             }
-         }
-
-        // 2. If not found, fall back to any existing resource dir
-        if (resourcePrefix.empty()) {
+        for (const auto& dir : candidates) {
+            std::string testPath = dir + "/smp";
+            std::ifstream f(testPath.c_str());
+            if (f.good()) {
+                g_resourcePrefix = dir + "/";
+                break;
+            }
+        }
+        if (g_resourcePrefix.empty()) {
             for (const auto& dir : candidates) {
                 if (std::filesystem::exists(dir)) {
-                    resourcePrefix = dir + "/";
+                    g_resourcePrefix = dir + "/";
                     break;
                 }
             }
         }
-        
-        // 3. Final fallback
-        if (resourcePrefix.empty()) {
-             resourcePrefix = RESOURCE_DIR;
+        if (g_resourcePrefix.empty()) {
+            g_resourcePrefix = RESOURCE_DIR;
         }
+    }
+    g_pathInit = true;
+    std::cout << "[FileLoader] Data root: " << g_dataRoot << std::endl;
+    std::cout << "[FileLoader] Resource prefix: " << g_resourcePrefix << std::endl;
+}
+}  // namespace
 
-        initialized = true;
-        std::cout << "[FileLoader] Discovered resource path: " << resourcePrefix << std::endl;
+std::string FileLoader::getDataRoot() {
+    ensurePathInit();
+    return g_dataRoot;
+}
+
+std::string FileLoader::getSaveDir() {
+    ensurePathInit();
+    return PlatformCompat::discoverSaveDir(g_dataRoot);
+}
+
+std::string FileLoader::getResourcePath(const std::string& filename) {
+    ensurePathInit();
+
+    // Absolute path
+    if (filename.find(":") != std::string::npos ||
+        (!filename.empty() && (filename[0] == '/' || filename[0] == '\\'))) {
+        return filename;
     }
 
     std::string cleanName = filename;
-    
-    // Debug: Print input
-    // std::cout << "[FileLoader] Input: " << filename << std::endl;
-
-    // Remove "resource/" or "resource\" from start of filename if present to avoid duplication
     if (cleanName.find("resource/") == 0) {
         cleanName = cleanName.substr(9);
     } else if (cleanName.find("resource\\") == 0) {
         cleanName = cleanName.substr(9);
     }
-    
-    // Handle "../resource/" case if present
     if (cleanName.find("../resource/") == 0) {
         cleanName = cleanName.substr(12);
     }
 
-    // std::cout << "[FileLoader] Final Path: " << resourcePrefix + cleanName << std::endl;
-    return resourcePrefix + cleanName;
+    // Paths that live next to resource/ (save/, music/, sound/, fight/, eft/, list/)
+    const char* siblingRoots[] = {"save/", "music/", "sound/", "fight/", "eft/", "list/", "mmap/"};
+    for (const char* sib : siblingRoots) {
+        if (cleanName.find(sib) == 0 || filename.find(sib) == 0) {
+            std::string rel = (cleanName.find(sib) == 0) ? cleanName : filename;
+            return g_dataRoot + rel;
+        }
+    }
+    // Also accept bare "music/0.wav" style already covered; if caller passed music without prefix via getResourcePath("music/x")
+    if (cleanName.rfind("music/", 0) == 0 || cleanName.rfind("sound/", 0) == 0 ||
+        cleanName.rfind("fight/", 0) == 0 || cleanName.rfind("eft/", 0) == 0 ||
+        cleanName.rfind("list/", 0) == 0 || cleanName.rfind("save/", 0) == 0) {
+        return g_dataRoot + cleanName;
+    }
+
+    return g_resourcePrefix + cleanName;
 }
 
 std::vector<uint8_t> FileLoader::loadFile(const std::string& filename) {
@@ -93,35 +118,34 @@ std::vector<uint8_t> FileLoader::loadFile(const std::string& filename) {
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
 
-    std::vector<uint8_t> buffer(size);
-    if (file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+    std::vector<uint8_t> buffer(static_cast<size_t>(size));
+    if (size > 0 && file.read(reinterpret_cast<char*>(buffer.data()), size)) {
         return buffer;
     }
+    if (size == 0) return buffer;
     return {};
 }
 
 bool FileLoader::saveFile(const std::string& filename, const void* data, size_t size) {
-    // We assume saving to the same folder structure or a dedicated save folder
-    // But getResourcePath finds the *read* path.
-    // For saving, we usually want to save to a specific writable directory.
-    // For now, let's assume saving to "save/" directory relative to CWD.
-    
-    // Ensure "save" directory exists
-    if (!std::filesystem::exists("save")) {
-        std::filesystem::create_directory("save");
+    std::string path = filename;
+    if (filename.find("save/") == 0 || filename.find("save\\") == 0) {
+        path = getSaveDir() + filename.substr(5);
+    } else if (filename.find('/') == std::string::npos && filename.find('\\') == std::string::npos) {
+        path = getSaveDir() + filename;
     }
-    
-    // Filename usually comes in as "save/r1.grp" or just "r1.grp"
-    // If it has "save/" prefix, we use it. If not, we prepend it?
-    // Let's rely on caller providing correct relative path (e.g., "save/r1.grp")
-    
-    std::ofstream file(filename, std::ios::binary | std::ios::trunc);
+
+    std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty() && !std::filesystem::exists(parent)) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file) {
-        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        std::cerr << "Failed to open file for writing: " << path << std::endl;
         return false;
     }
-    
-    file.write(reinterpret_cast<const char*>(data), size);
+    file.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
     return file.good();
 }
 
@@ -163,7 +187,7 @@ std::vector<uint8_t> FileLoader::loadGroupRecord(const std::string& grpName, con
     }
 
     grpFile.seekg(offsetCurrent);
-    std::vector<uint8_t> buffer(length);
+    std::vector<uint8_t> buffer(static_cast<size_t>(length));
     if (!grpFile.read(reinterpret_cast<char*>(buffer.data()), length)) {
         return {};
     }

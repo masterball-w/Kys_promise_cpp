@@ -52,27 +52,41 @@ public:
         m_x50[index + 32768] = value;
     }
 
+    // Pascal pansichar(@x50[start]): little-endian bytes packed 2-per-int16
     std::string getX50String(int startIndex) const {
         std::string result;
-        for (int i = 0; i < 256; ++i) {
-            int idx = startIndex + i;
-            if (idx < -32768 || idx > 32767) break;
-            int16_t val = m_x50[idx + 32768];
-            if (val == 0) break;
-            result.push_back((char)(val & 0xFF));
-            if (val >> 8) {
-                result.push_back((char)((val >> 8) & 0xFF));
-            }
+        for (int bi = 0; bi < 512; ++bi) {
+            int wordIdx = startIndex + bi / 2;
+            if (wordIdx < -32768 || wordIdx > 32767) break;
+            int16_t val = m_x50[wordIdx + 32768];
+            uint8_t b = (bi % 2 == 0)
+                ? static_cast<uint8_t>(val & 0xFF)
+                : static_cast<uint8_t>((val >> 8) & 0xFF);
+            if (b == 0) break;
+            result.push_back(static_cast<char>(b));
         }
         return result;
     }
 
     void setX50String(int startIndex, const std::string& str) {
-        for (size_t i = 0; i < str.size() && i < 256; ++i) {
-            int idx = startIndex + (int)i;
-            if (idx < -32768 || idx > 32767) break;
-            m_x50[idx + 32768] = (uint8_t)str[i];
+        // Write chars + trailing NUL (Pascal pansichar layout)
+        size_t n = str.size();
+        if (n > 511) n = 511;
+        for (size_t i = 0; i <= n; ++i) {
+            uint8_t b = (i < n) ? static_cast<uint8_t>(str[i]) : 0;
+            int wordIdx = startIndex + static_cast<int>(i) / 2;
+            if (wordIdx < -32768 || wordIdx > 32767) break;
+            int16_t cur = m_x50[wordIdx + 32768];
+            if ((i % 2) == 0) {
+                m_x50[wordIdx + 32768] = static_cast<int16_t>((cur & 0xFF00) | b);
+            } else {
+                m_x50[wordIdx + 32768] = static_cast<int16_t>((cur & 0x00FF) | (b << 8));
+            }
         }
+    }
+
+    int getX50StringLength(int startIndex) const {
+        return static_cast<int>(getX50String(startIndex).size());
     }
 
     void setTeamMember(int slot, int roleId) {
@@ -165,6 +179,24 @@ public:
     void useItem(int itemId);
     int getItemAmount(int itemId);
     const std::vector<InventoryItem>& getItemList() const { return m_inventory; }
+    void ensureInventorySize();
+    void setInventorySlot(int slot, int16_t number, int16_t amount);
+    InventoryItem getInventorySlot(int slot) const;
+
+    // instruct_50e memory-mapped globals (Pascal AutoRefresh / CurItem / where …)
+    int getAutoRefresh() const { return m_autoRefresh; }
+    void setAutoRefresh(int v) { m_autoRefresh = v; }
+    int getCurItem() const { return m_curItem; }
+    void setCurItem(int v) { m_curItem = v; }
+    int getCurMagic() const { return m_curMagic; }
+    void setCurMagic(int v) { m_curMagic = v; }
+    int getWhere() const { return m_where; }
+    void setWhere(int v) { m_where = v; }
+
+    // Scene player (Sx/Sy) without forcing camera; camera is Cx/Cy
+    void setScenePlayerPosition(int x, int y) { m_mainMapX = x; m_mainMapY = y; }
+    void setScenePlayerX(int x) { m_mainMapX = x; }
+    void setScenePlayerY(int y) { m_mainMapY = y; }
     void JoinParty(int roleId);
     void LeaveParty(int roleId);
     void Rest();
@@ -263,6 +295,10 @@ private:
     bool m_showMR = true; // Pascal ShowMR: hide protagonist during new-game opening
     int16_t m_time = 0, m_timeEvent = 0, m_randomEvent = 0;
     int16_t m_gameTime = 0;
+    int m_autoRefresh = 0;
+    int m_curItem = -1;
+    int m_curMagic = -1;
+    int m_where = 0; // 0=world, 1=scene, 2=battle (Pascal where)
     bool m_playedTitleAnim = false;
     uint32_t m_moveHoldStart = 0;
     uint32_t m_lastMoveTick = 0;

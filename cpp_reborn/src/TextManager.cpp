@@ -259,7 +259,35 @@ std::string TextManager::gbkToUtf8(const std::string& gbkStr) {
     
     return utf8;
 #else
-    return gbkStr; 
+    auto tryIconv = [](const char* to, const char* from, const std::string& in) -> std::string {
+        char* out = SDL_iconv_string(to, from, in.c_str(), in.size() + 1);
+        if (!out) return {};
+        std::string s(out);
+        SDL_free(out);
+        if (!s.empty() && s.back() == '\0') s.pop_back();
+        return s;
+    };
+
+    std::string utf8;
+    if (m_textEncoding == TextEncoding::Big5) {
+        utf8 = tryIconv("UTF-8", "BIG5", gbkStr);
+        if (utf8.empty()) utf8 = tryIconv("UTF-8", "CP950", gbkStr);
+    } else if (m_textEncoding == TextEncoding::GBK) {
+        utf8 = tryIconv("UTF-8", "GBK", gbkStr);
+        if (utf8.empty()) utf8 = tryIconv("UTF-8", "GB18030", gbkStr);
+        if (utf8.empty()) utf8 = tryIconv("UTF-8", "CP936", gbkStr);
+    } else {
+        utf8 = tryIconv("UTF-8", "GBK", gbkStr);
+        if (utf8.empty()) utf8 = tryIconv("UTF-8", "GB18030", gbkStr);
+        if (!utf8.empty() && ContainsRareCJK(utf8)) {
+            std::string big5 = tryIconv("UTF-8", "BIG5", gbkStr);
+            if (!big5.empty() && !ContainsRareCJK(big5)) utf8 = big5;
+        }
+        if (utf8.empty()) utf8 = tryIconv("UTF-8", "BIG5", gbkStr);
+    }
+    if (utf8.empty()) utf8 = gbkStr;
+    if (m_useSimplified) utf8 = traditionalToSimplified(utf8);
+    return utf8;
 #endif
 }
 
@@ -278,18 +306,25 @@ std::string TextManager::big5ToUtf8(const std::string& big5Str) {
     
     return utf8;
 #else
-    return big5Str;
+    char* out = SDL_iconv_string("UTF-8", "BIG5", big5Str.c_str(), big5Str.size() + 1);
+    if (!out) out = SDL_iconv_string("UTF-8", "CP950", big5Str.c_str(), big5Str.size() + 1);
+    if (!out) return big5Str;
+    std::string utf8(out);
+    SDL_free(out);
+    if (!utf8.empty() && utf8.back() == '\0') utf8.pop_back();
+    if (m_useSimplified) utf8 = traditionalToSimplified(utf8);
+    return utf8;
 #endif
 }
 
 std::string TextManager::talkToUtf8(const std::string& talkBytes) {
     if (talkBytes.empty()) return "";
 
-#ifdef _WIN32
     auto hasReplacement = [](const std::string& s) -> bool {
         return s.find("\xEF\xBF\xBD") != std::string::npos;
     };
 
+#ifdef _WIN32
     if (m_textEncoding == TextEncoding::GBK) {
         return gbkToUtf8(talkBytes);
     }
@@ -297,19 +332,26 @@ std::string TextManager::talkToUtf8(const std::string& talkBytes) {
         return big5ToUtf8(talkBytes);
     }
 
-    // Auto: talk.grp in this game is Big5; try Big5 first, then GBK fallback.
+    // Auto: prefer GBK for this game's talk.grp (see editor talk codec)
+    std::string gbkUtf8 = gbkToUtf8(talkBytes);
+    if (!gbkUtf8.empty() && !hasReplacement(gbkUtf8) && !ContainsRareCJK(gbkUtf8)) {
+        return gbkUtf8;
+    }
     std::string big5Utf8 = big5ToUtf8(talkBytes);
     if (!big5Utf8.empty() && !hasReplacement(big5Utf8) && !ContainsRareCJK(big5Utf8)) {
         return big5Utf8;
     }
-    std::string gbkUtf8 = gbkToUtf8(talkBytes);
-    if (!gbkUtf8.empty() && !hasReplacement(gbkUtf8)) {
-        return gbkUtf8;
-    }
+    if (!gbkUtf8.empty() && !hasReplacement(gbkUtf8)) return gbkUtf8;
     if (!big5Utf8.empty()) return big5Utf8;
     return gbkUtf8;
 #else
-    return talkBytes;
+    if (m_textEncoding == TextEncoding::Big5) return big5ToUtf8(talkBytes);
+    if (m_textEncoding == TextEncoding::GBK) return gbkToUtf8(talkBytes);
+    std::string gbkUtf8 = gbkToUtf8(talkBytes);
+    if (!gbkUtf8.empty() && !hasReplacement(gbkUtf8) && !ContainsRareCJK(gbkUtf8)) return gbkUtf8;
+    std::string big5Utf8 = big5ToUtf8(talkBytes);
+    if (!big5Utf8.empty() && !hasReplacement(big5Utf8)) return big5Utf8;
+    return !gbkUtf8.empty() ? gbkUtf8 : big5Utf8;
 #endif
 }
 
@@ -337,7 +379,14 @@ std::string TextManager::utf8ToGbk(const std::string& utf8Str) {
     if (!ansi.empty()) return ansi;
     return utf8Str;
 #else
-    return utf8Str;
+    char* out = SDL_iconv_string("GBK", "UTF-8", utf8Str.c_str(), utf8Str.size() + 1);
+    if (!out) out = SDL_iconv_string("GB18030", "UTF-8", utf8Str.c_str(), utf8Str.size() + 1);
+    if (!out) out = SDL_iconv_string("CP936", "UTF-8", utf8Str.c_str(), utf8Str.size() + 1);
+    if (!out) return utf8Str;
+    std::string gbk(out);
+    SDL_free(out);
+    if (!gbk.empty() && gbk.back() == '\0') gbk.pop_back();
+    return gbk;
 #endif
 }
 

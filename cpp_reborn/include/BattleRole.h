@@ -8,6 +8,9 @@ public:
     BattleRole();
     virtual ~BattleRole() = default;
 
+    using GameObject::getData;
+    using GameObject::setData;
+
     int16_t getRNum() const;
     void setRNum(int16_t value);
 

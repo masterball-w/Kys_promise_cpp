@@ -297,12 +297,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      * @return names of shared libraries to be loaded (e.g. "SDL3", "main").
      */
     protected String[] getLibraries() {
+        // Order matters: SDL3 first, then extensions, then shared engine (cpp_reborn → kys_promise).
         return new String[] {
             "SDL3",
-            // "SDL3_image",
-            // "SDL3_mixer",
-            // "SDL3_net",
-            // "SDL3_ttf",
+            "SDL3_image",
+            "SDL3_ttf",
             "kys_promise"
         };
     }

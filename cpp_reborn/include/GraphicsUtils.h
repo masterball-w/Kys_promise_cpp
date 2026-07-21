@@ -14,6 +14,9 @@ public:
     static void loadPalette(const std::string& filename);
     static void resetPalette(int index = 0);
     static uint32_t getPaletteColor(int index); // Returns mapped 32-bit color
+    // Pascal ACol[] poke (6-bit channel bytes); rebuilds RGBA entry for that color
+    static void setAColByte(int byteIndex, uint8_t value);
+    static uint8_t getAColByte(int byteIndex);
     
     // Palette Animation
     static void ChangeCol(uint32_t ticks); // Cycles palette colors for water effect

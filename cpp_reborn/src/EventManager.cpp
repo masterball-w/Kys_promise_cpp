@@ -15,6 +15,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
+#include "VirtualControls.h"
 
 namespace {
     uint16_t ReadU16LE(const std::string& s, size_t offset) {
@@ -1942,7 +1943,7 @@ int EventManager::Instruct_AskRest(int jump1, int jump2) {
             UIManager::getInstance().DrawShadowTextUtf8(" 取消", centerX + 1, centerY - 50, selColor1, selColor2);
         }
         
-        SDL_RenderPresent(UIManager::getInstance().GetRenderer());
+        VirtualControls::present(UIManager::getInstance().GetRenderer());
         SDL_Delay(16);
     }
     
@@ -2144,54 +2145,48 @@ void EventManager::Instruct_GameOver() {
 
 int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5, int e6) {
     int result = 0;
-    
+    auto eGet = [&](int bit, int raw) -> int {
+        if ((e1 >> bit) & 1) return GameManager::getInstance().getX50(raw);
+        return raw;
+    };
+
     switch (code) {
         case 0:
             GameManager::getInstance().setX50(e1, e2);
             break;
         case 1: {
-            int t1 = e3;
-            if (e1 & 1) t1 = GameManager::getInstance().getX50(e3);
-            int idx4 = e4;
-            if ((e1 >> 1) & 1) idx4 = GameManager::getInstance().getX50(e4);
-            int val = e5;
-            if ((e1 >> 2) & 1) val = GameManager::getInstance().getX50(e5);
-            t1 = t1 + idx4;
+            // Pascal: t1 := e3 + e_getvalue(0, e1, e4); x50[t1] := e_getvalue(1, e1, e5);
+            int t1 = e3 + eGet(0, e4);
+            int val = eGet(1, e5);
             GameManager::getInstance().setX50(t1, val);
             if (e2 == 1) {
-                int currentVal = GameManager::getInstance().getX50(t1);
-                GameManager::getInstance().setX50(t1, currentVal & 0xFF);
+                GameManager::getInstance().setX50(t1, GameManager::getInstance().getX50(t1) & 0xFF);
             }
             break;
         }
         case 2: {
-            int t1 = e3;
-            if (e1 & 1) t1 = GameManager::getInstance().getX50(e3);
-            int idx4 = e4;
-            if ((e1 >> 1) & 1) idx4 = GameManager::getInstance().getX50(e4);
-            t1 = t1 + idx4;
+            // Pascal: t1 := e3 + e_getvalue(0, e1, e4); x50[e5] := x50[t1];
+            int t1 = e3 + eGet(0, e4);
             int val = GameManager::getInstance().getX50(t1);
             if (e2 == 1) val = val & 0xFF;
             GameManager::getInstance().setX50(e5, val);
             break;
         }
         case 3: {
-            int t1 = e5;
-            if (e1 & 1) t1 = GameManager::getInstance().getX50(e5);
+            int t1 = eGet(0, e5);
             int val4 = GameManager::getInstance().getX50(e4);
             switch (e2) {
                 case 0: GameManager::getInstance().setX50(e3, val4 + t1); break;
                 case 1: GameManager::getInstance().setX50(e3, val4 - t1); break;
                 case 2: GameManager::getInstance().setX50(e3, val4 * t1); break;
-                case 3: GameManager::getInstance().setX50(e3, val4 / t1); break;
-                case 4: GameManager::getInstance().setX50(e3, val4 % t1); break;
-                case 5: GameManager::getInstance().setX50(e3, (uint16_t)val4 / t1); break;
+                case 3: if (t1 != 0) GameManager::getInstance().setX50(e3, val4 / t1); break;
+                case 4: if (t1 != 0) GameManager::getInstance().setX50(e3, val4 % t1); break;
+                case 5: if (t1 != 0) GameManager::getInstance().setX50(e3, (uint16_t)val4 / t1); break;
             }
             break;
         }
         case 4: {
-            int t1 = e4;
-            if (e1 & 1) t1 = GameManager::getInstance().getX50(e4);
+            int t1 = eGet(0, e4);
             GameManager::getInstance().setX50(0x7000, 0);
             int val3 = GameManager::getInstance().getX50(e3);
             switch (e2) {
@@ -2206,60 +2201,390 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             }
             break;
         }
+        case 5: {
+            // Zero all x50 — expensive but rare; clear common working range
+            for (int i = -0x8000; i <= 0x7FFF; ++i) {
+                GameManager::getInstance().setX50(i, 0);
+            }
+            break;
+        }
+        case 8: {
+            // Read talk into x50 string buffer at e3
+            int talkId = eGet(0, e2);
+            int dest = e3;
+            if (talkId < 0 || talkId >= (int)m_talkIndices.size()) break;
+            int offset = (talkId == 0) ? 0 : m_talkIndices[talkId - 1];
+            int next = (talkId < (int)m_talkIndices.size()) ? m_talkIndices[talkId] : (int)m_talkData.size();
+            if (talkId == 0 && !m_talkIndices.empty()) next = m_talkIndices[0];
+            int len = next - offset;
+            if (len < 0) len = 0;
+            if (offset + len > (int)m_talkData.size()) len = (int)m_talkData.size() - offset;
+            // Pack bytes into x50 words (Pascal fileread into x50[e3])
+            for (int i = 0; i < len; ++i) {
+                uint8_t b = static_cast<uint8_t>(m_talkData[offset + i]) ^ 0xFF;
+                int wordIdx = dest + i / 2;
+                int16_t cur = GameManager::getInstance().getX50(wordIdx);
+                if ((i % 2) == 0) {
+                    GameManager::getInstance().setX50(wordIdx, (cur & 0xFF00) | b);
+                } else {
+                    GameManager::getInstance().setX50(wordIdx, (cur & 0x00FF) | (b << 8));
+                }
+            }
+            // Null terminate
+            int termIdx = dest + len / 2;
+            if ((len % 2) == 0) {
+                GameManager::getInstance().setX50(termIdx, GameManager::getInstance().getX50(termIdx) & 0xFF00);
+            } else {
+                GameManager::getInstance().setX50(termIdx, GameManager::getInstance().getX50(termIdx) & 0x00FF);
+            }
+            break;
+        }
+        case 9: {
+            // Format string: dest e2, fmt e3, arg e4 (Delphi Format with %d)
+            int arg = eGet(0, e4);
+            std::string fmt = GameManager::getInstance().getX50String(e3);
+            std::string out;
+            for (size_t i = 0; i < fmt.size(); ++i) {
+                if (fmt[i] == '%' && i + 1 < fmt.size() &&
+                    (fmt[i + 1] == 'd' || fmt[i + 1] == 'D' || fmt[i + 1] == 's' || fmt[i + 1] == 'S')) {
+                    out += std::to_string(arg);
+                    ++i;
+                } else {
+                    out.push_back(fmt[i]);
+                }
+            }
+            GameManager::getInstance().setX50String(e2, out);
+            break;
+        }
+        case 10:
+            GameManager::getInstance().setX50(e2, GameManager::getInstance().getX50StringLength(e1));
+            break;
+        case 11: {
+            // Concat e2 + e3 → e1
+            std::string a = GameManager::getInstance().getX50String(e2);
+            std::string b = GameManager::getInstance().getX50String(e3);
+            GameManager::getInstance().setX50String(e1, a + b);
+            break;
+        }
+        case 12: {
+            // Spaces string (Chinese-width space count e3 inclusive 0..e3)
+            int n = eGet(0, e3);
+            if (n < 0) n = 0;
+            if (n > 255) n = 255;
+            std::string spaces(static_cast<size_t>(n + 1), ' ');
+            GameManager::getInstance().setX50String(e2, spaces);
+            break;
+        }
         case 16: {
-            int idx3 = e3;
-            int idx4 = e4;
-            int val = e5;
-            if (e1 & 1) idx3 = GameManager::getInstance().getX50(e3);
-            if ((e1 >> 1) & 1) idx4 = GameManager::getInstance().getX50(e4);
-            if ((e1 >> 2) & 1) val = GameManager::getInstance().getX50(e5);
+            int idx3 = eGet(0, e3);
+            int idx4 = eGet(1, e4);
+            int val = eGet(2, e5);
             switch (e2) {
                 case 0: GameManager::getInstance().getRole(idx3).setData(idx4 / 2, val); break;
                 case 1: GameManager::getInstance().getItem(idx3).setData(idx4 / 2, val); break;
-                case 2: SceneManager::getInstance().GetScene(idx3)->setData(idx4 / 2, val); break;
+                case 2: if (SceneManager::getInstance().GetScene(idx3))
+                            SceneManager::getInstance().GetScene(idx3)->setData(idx4 / 2, val); break;
                 case 3: GameManager::getInstance().getMagic(idx3).setData(idx4 / 2, val); break;
                 case 4: GameManager::getInstance().setShopData(idx3, idx4 / 2, static_cast<int16_t>(val)); break;
             }
             break;
         }
         case 17: {
-            int idx3 = e3;
-            int idx4 = e4;
-            if (e1 & 1) idx3 = GameManager::getInstance().getX50(e3);
-            if ((e1 >> 1) & 1) idx4 = GameManager::getInstance().getX50(e4);
+            int idx3 = eGet(0, e3);
+            int idx4 = eGet(1, e4);
             switch (e2) {
                 case 0: GameManager::getInstance().setX50(e5, GameManager::getInstance().getRole(idx3).getData(idx4 / 2)); break;
                 case 1: GameManager::getInstance().setX50(e5, GameManager::getInstance().getItem(idx3).getData(idx4 / 2)); break;
-                case 2: GameManager::getInstance().setX50(e5, SceneManager::getInstance().GetScene(idx3)->getData(idx4 / 2)); break;
+                case 2: {
+                    Scene* sc = SceneManager::getInstance().GetScene(idx3);
+                    GameManager::getInstance().setX50(e5, sc ? sc->getData(idx4 / 2) : 0);
+                    break;
+                }
                 case 3: GameManager::getInstance().setX50(e5, GameManager::getInstance().getMagic(idx3).getData(idx4 / 2)); break;
                 case 4: GameManager::getInstance().setX50(e5, GameManager::getInstance().getShopData(idx3, idx4 / 2)); break;
             }
             break;
         }
         case 18: {
-            int slot = e2;
-            int roleId = e3;
-            if (e1 & 1) slot = GameManager::getInstance().getX50(e2);
-            if ((e1 >> 1) & 1) roleId = GameManager::getInstance().getX50(e3);
+            int slot = eGet(0, e2);
+            int roleId = eGet(1, e3);
             GameManager::getInstance().setTeamMember(slot, roleId);
             break;
         }
         case 19: {
-            int slot = e2;
-            if (e1 & 1) slot = GameManager::getInstance().getX50(e2);
+            int slot = eGet(0, e2);
             GameManager::getInstance().setX50(e3, GameManager::getInstance().getTeamMember(slot));
             break;
         }
         case 20: {
-            int itemIdx = e2;
-            if (e1 & 1) itemIdx = GameManager::getInstance().getX50(e2);
+            int itemIdx = eGet(0, e2);
             GameManager::getInstance().setX50(e3, GameManager::getInstance().getItemAmount(itemIdx));
             break;
         }
+        case 21: {
+            int s = eGet(0, e2);
+            int ev = eGet(1, e3);
+            int idx = eGet(2, e4);
+            int val = eGet(3, e5);
+            SceneManager::getInstance().SetEventData(s, ev, idx, static_cast<int16_t>(val));
+            if (s == SceneManager::getInstance().GetCurrentSceneId() && idx >= 5 && idx <= 7) {
+                SceneManager::getInstance().RefreshEventLayer(s);
+            }
+            break;
+        }
+        case 22: {
+            int s = eGet(0, e2);
+            int ev = eGet(1, e3);
+            int idx = eGet(2, e4);
+            GameManager::getInstance().setX50(e5, SceneManager::getInstance().GetEventData(s, ev, idx));
+            break;
+        }
+        case 23: {
+            int s = eGet(0, e2);
+            int layer = eGet(1, e3);
+            int y = eGet(2, e4);
+            int x = eGet(3, e5);
+            int val = eGet(4, e6);
+            // Pascal: Sdata[e2, e3, e5, e4] := e6  → [scene, layer, x, y]
+            SceneManager::getInstance().SetSceneTile(s, layer, x, y, static_cast<int16_t>(val));
+            if (s == SceneManager::getInstance().GetCurrentSceneId() && layer != 3) {
+                SceneManager::getInstance().RefreshEventLayer(s);
+            }
+            break;
+        }
+        case 24: {
+            // Full SData read (Pascal). Legacy gameTime branch kept for e2==-22 scripts.
+            if (e2 == -22) {
+                int gameTime = GameManager::getInstance().getGameTime();
+                GameManager::getInstance().setX50(0x7000, 1);
+                if (gameTime >= e3) GameManager::getInstance().setX50(0x7000, 0);
+            } else {
+                int s = eGet(0, e2);
+                int layer = eGet(1, e3);
+                int y = eGet(2, e4);
+                int x = eGet(3, e5);
+                GameManager::getInstance().setX50(e6, SceneManager::getInstance().GetSceneTile(s, layer, x, y));
+            }
+            break;
+        }
+        case 25: {
+            // Memory poke via hard-coded Pascal addresses
+            int val = eGet(0, e5);
+            int off = eGet(1, e6);
+            uint32_t base = static_cast<uint32_t>(static_cast<uint16_t>(e3))
+                          + (static_cast<uint32_t>(static_cast<uint16_t>(e4)) << 16);
+            uint32_t t1 = base + static_cast<uint32_t>(static_cast<uint16_t>(off));
+            auto& gm = GameManager::getInstance();
+            switch (t1) {
+                case 0x1D295A: gm.setScenePlayerX(val); break;
+                case 0x1D295C: gm.setScenePlayerY(val); break;
+                case 0x1D2956: {
+                    int cx, cy; gm.getCameraPosition(cx, cy);
+                    gm.setCameraPosition(val, cy);
+                    break;
+                }
+                case 0x1D2958: {
+                    int cx, cy; gm.getCameraPosition(cx, cy);
+                    gm.setCameraPosition(cx, val);
+                    break;
+                }
+                case 0x1D295E:
+                    gm.enterScene(val);
+                    break;
+                case 0x4:
+                    BattleManager::getInstance().SetBattleResult(val);
+                    break;
+                case 0x6:
+                    gm.setAutoRefresh(val);
+                    break;
+                default:
+                    break;
+            }
+            // Item list range (also exact $18FE2C with e6 slot encoding)
+            if (t1 == 0x18FE2C) {
+                int slot = off / 4;
+                if ((off % 4) <= 1) {
+                    auto cur = gm.getInventorySlot(slot);
+                    gm.setInventorySlot(slot, static_cast<int16_t>(val), cur.amount);
+                } else {
+                    auto cur = gm.getInventorySlot(slot);
+                    gm.setInventorySlot(slot, cur.id, static_cast<int16_t>(val));
+                }
+            } else if (t1 >= 0x18FE2C && t1 - 0x18FE2C < 800) {
+                int i = static_cast<int>(t1 - 0x18FE2C);
+                int slot = i / 4;
+                if ((i % 4) <= 1) {
+                    auto cur = gm.getInventorySlot(slot);
+                    gm.setInventorySlot(slot, static_cast<int16_t>(val), cur.amount);
+                } else {
+                    auto cur = gm.getInventorySlot(slot);
+                    gm.setInventorySlot(slot, cur.id, static_cast<int16_t>(val));
+                }
+            }
+            // Palette ACol
+            if (t1 == 0x051C83 || (base == 0x051C83)) {
+                GraphicsUtils::setAColByte(off, static_cast<uint8_t>(val % 256));
+                GraphicsUtils::setAColByte(off + 1, static_cast<uint8_t>(val / 256));
+            }
+            break;
+        }
+        case 26: {
+            int off = eGet(0, e6);
+            uint32_t base = static_cast<uint32_t>(static_cast<uint16_t>(e3))
+                          + (static_cast<uint32_t>(static_cast<uint16_t>(e4)) << 16);
+            uint32_t t1 = base + static_cast<uint32_t>(static_cast<uint16_t>(off));
+            auto& gm = GameManager::getInstance();
+            auto& bm = BattleManager::getInstance();
+            int out = 0;
+            int sx, sy, cx, cy, mx, my;
+            gm.getMainMapPosition(sx, sy);
+            gm.getCameraPosition(cx, cy);
+            gm.getSavedWorldPosition(mx, my);
+            // When on world map mainMap IS Mx/My; in scene mainMap is Sx/Sy
+            switch (t1) {
+                case 0x1D295E: out = gm.getCurrentSceneId(); break;
+                case 0x1D295A: out = sx; break;
+                case 0x1D295C: out = sy; break;
+                case 0x1C0B88: out = mx; break;
+                case 0x1C0B8C: out = my; break;
+                case 0x05B53A: out = 1; break;
+                case 0x0544F2: out = gm.getSubMapFace(); break;
+                case 0x1E6ED6: out = gm.getX50(28100); break;
+                case 0x1D2956: out = cx; break;
+                case 0x1D2958: out = cy; break;
+                case 0x556DA: out = bm.getCursorX(); break;
+                case 0x556DC: out = bm.getCursorY(); break;
+                case 0x1: out = bm.getMaxRound(); break;
+                case 0x2: out = gm.getGameTime(); break;
+                case 0x3: out = GetExecutingEventId(); break;
+                case 0x4: out = bm.GetBattleResult(); break;
+                case 0x5: out = bm.getBattleRoleCount(); break;
+                case 0x6: out = gm.getAutoRefresh(); break;
+                case 0x7: out = gm.getCurItem(); break;
+                case 0x8: out = gm.getWhere(); break;
+                case 0x9: out = bm.getCurrentRoleIndex(); break;
+                case 0x10: out = gm.getCurMagic(); break;
+                case 0x11: {
+                    int bnum = bm.getCurrentRoleIndex();
+                    int magicId = gm.getCurMagic();
+                    out = 0;
+                    if (bnum >= 0 && bnum < bm.getBattleRoleCount()) {
+                        int rnum = bm.getBattleRole(bnum).getRNum();
+                        if (rnum >= 0 && rnum < gm.getRoleCount()) {
+                            Role& role = gm.getRole(rnum);
+                            for (int i = 0; i < 10; ++i) {
+                                if (role.getMagic(i) == magicId) {
+                                    out = role.getMagLevel(i) / 100 + 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+            if (t1 >= 0x18FE2C && t1 - 0x18FE2C < 800) {
+                int i = static_cast<int>(t1 - 0x18FE2C);
+                auto slot = gm.getInventorySlot(i / 4);
+                out = ((i % 4) <= 1) ? slot.id : slot.amount;
+            }
+            if (t1 >= 0x1E4A04 && t1 < 0x1E6A04) {
+                int i = static_cast<int>((t1 - 0x1E4A04) / 2);
+                out = bm.getBattleField(2, i % 64, i / 64);
+            }
+            gm.setX50(e5, out);
+            break;
+        }
+        case 27: {
+            int idx = eGet(0, e3);
+            std::string name;
+            switch (e2) {
+                case 0: name = GameManager::getInstance().getRole(idx).getName(); break;
+                case 1: name = GameManager::getInstance().getItem(idx).getName(); break;
+                case 2: {
+                    Scene* sc = SceneManager::getInstance().GetScene(idx);
+                    name = sc ? sc->getName() : "";
+                    break;
+                }
+                case 3: name = GameManager::getInstance().getMagic(idx).getName(); break;
+            }
+            GameManager::getInstance().setX50String(e4, name + " ");
+            break;
+        }
+        case 28:
+            GameManager::getInstance().setX50(e1, GameManager::getInstance().getX50(28005));
+            break;
+        case 29: {
+            int bnum = eGet(0, e2);
+            int step = eGet(1, e3);
+            auto& bm = BattleManager::getInstance();
+            if (e5 == 0) {
+                bm.SelectAim(bnum, step);
+            }
+            GameManager::getInstance().setX50(e4, bm.getBattleField(2, bm.getCursorX(), bm.getCursorY()));
+            break;
+        }
+        case 30: {
+            int bnum = eGet(0, e2);
+            int field = eGet(1, e3);
+            auto& roles = BattleManager::getInstance();
+            int val = 0;
+            if (bnum >= 0 && bnum < roles.getBattleRoleCount()) {
+                val = roles.getBattleRole(bnum).getData(field / 2);
+            }
+            GameManager::getInstance().setX50(e4, val);
+            break;
+        }
+        case 31: {
+            int bnum = eGet(0, e2);
+            int field = eGet(1, e3);
+            int val = eGet(2, e4);
+            auto& bm = BattleManager::getInstance();
+            if (bnum >= 0 && bnum < bm.getBattleRoleCount()) {
+                bm.getBattleRole(bnum).setData(field / 2, static_cast<int16_t>(val));
+            }
+            break;
+        }
         case 32: {
-            int val3 = e3;
-            if (e1 & 1) val3 = GameManager::getInstance().getX50(e3);
+            int val3 = eGet(0, e3);
             result = 655360 * (val3 + 1) + GameManager::getInstance().getX50(e2);
+            break;
+        }
+        case 33: {
+            // Draw multi-line GBK string (* = line break)
+            int posX = eGet(0, e3);
+            int posY = eGet(1, e4);
+            int colorIdx = eGet(2, e5);
+            std::string text = GameManager::getInstance().getX50String(e2);
+            uint32_t c1 = GraphicsUtils::getPaletteColor(colorIdx & 0xFF);
+            uint32_t c2 = GraphicsUtils::getPaletteColor((colorIdx >> 8) & 0xFF);
+            int line = 0;
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i) {
+                if (i == text.size() || static_cast<uint8_t>(text[i]) == 0x2A) {
+                    std::string lineGbk = text.substr(start, i - start);
+                    std::string lineUtf8 = TextManager::getInstance().gbkToUtf8(lineGbk);
+                    UIManager::getInstance().DrawShadowTextUtf8(
+                        lineUtf8, posX - 22, posY + 22 * line - 25, c1, c2);
+                    ++line;
+                    start = i + 1;
+                }
+            }
+            if (GameManager::getInstance().getAutoRefresh() == 0) {
+                VirtualControls::present(UIManager::getInstance().GetRenderer());
+            }
+            break;
+        }
+        case 34: {
+            int x = eGet(0, e2);
+            int y = eGet(1, e3);
+            int w = eGet(2, e4);
+            int h = eGet(3, e5);
+            int alpha = eGet(4, e6);
+            uint32_t frame = GraphicsUtils::getPaletteColor(0xFF);
+            UIManager::getInstance().DrawRectangle(x, y, w, h, 0, frame, alpha);
             break;
         }
         case 35: {
@@ -2269,68 +2594,220 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             GameManager::getInstance().setX50(e2, mouseX);
             GameManager::getInstance().setX50(e3, mouseY - 30);
             switch (keyVal) {
-                case SDLK_LEFT: GameManager::getInstance().setX50(e1, 154); break;
-                case SDLK_RIGHT: GameManager::getInstance().setX50(e1, 156); break;
-                case SDLK_UP: GameManager::getInstance().setX50(e1, 158); break;
-                case SDLK_DOWN: GameManager::getInstance().setX50(e1, 152); break;
-                case SDLK_KP_4: GameManager::getInstance().setX50(e1, 154); break;
-                case SDLK_KP_6: GameManager::getInstance().setX50(e1, 156); break;
-                case SDLK_KP_8: GameManager::getInstance().setX50(e1, 158); break;
-                case SDLK_KP_2: GameManager::getInstance().setX50(e1, 152); break;
+                case SDLK_LEFT: case SDLK_KP_4: GameManager::getInstance().setX50(e1, 154); break;
+                case SDLK_RIGHT: case SDLK_KP_6: GameManager::getInstance().setX50(e1, 156); break;
+                case SDLK_UP: case SDLK_KP_8: GameManager::getInstance().setX50(e1, 158); break;
+                case SDLK_DOWN: case SDLK_KP_2: GameManager::getInstance().setX50(e1, 152); break;
             }
             break;
         }
         case 36: {
-            int posX = e3;
-            int posY = e4;
-            int colorIdx = e5;
-            if (e1 & 1) posX = GameManager::getInstance().getX50(e3);
-            if ((e1 >> 1) & 1) posY = GameManager::getInstance().getX50(e4);
-            if ((e1 >> 2) & 1) colorIdx = GameManager::getInstance().getX50(e5);
-            
+            int posX = eGet(0, e3);
+            int posY = eGet(1, e4);
+            int colorIdx = eGet(2, e5);
             std::string text = GameManager::getInstance().getX50String(e2);
             std::string textUtf8 = TextManager::getInstance().gbkToUtf8(text);
-            
-            int width = textUtf8.length() * 10 + 25;
+            int width = (int)textUtf8.length() * 10 + 25;
             int height = 27;
-            
             uint32_t color1 = GraphicsUtils::getPaletteColor(colorIdx & 0xFF);
             uint32_t color2 = GraphicsUtils::getPaletteColor((colorIdx >> 8) & 0xFF);
             uint32_t frameColor = GraphicsUtils::getPaletteColor(255);
-            
             UIManager::getInstance().DrawRectangle(posX, posY, width, height, 0, frameColor, 30);
             UIManager::getInstance().DrawShadowTextUtf8(textUtf8, posX + 8, posY + 3, color1, color2);
-            SDL_RenderPresent(UIManager::getInstance().GetRenderer());
-            
+            VirtualControls::present(UIManager::getInstance().GetRenderer());
             int key = UIManager::getInstance().WaitForKeyPress();
-            if (key == SDLK_Y) {
-                GameManager::getInstance().setX50(0x7000, 0);
+            GameManager::getInstance().setX50(0x7000, (key == SDLK_Y) ? 0 : 1);
+            break;
+        }
+        case 37: {
+            int d = eGet(0, e2);
+            int speed = GameManager::getInstance().getGameSpeed();
+            SDL_Delay(static_cast<Uint32>((d * speed) / 10));
+            break;
+        }
+        case 38: {
+            int n = eGet(0, e2);
+            if (n <= 0) {
+                GameManager::getInstance().setX50(e3, 0);
             } else {
-                GameManager::getInstance().setX50(0x7000, 1);
+                GameManager::getInstance().setX50(e3, rand() % n);
             }
             break;
         }
-        case 24: {
-            int gameTime = GameManager::getInstance().getGameTime();
-            if (e2 == -22) {
-                GameManager::getInstance().setX50(0x7000, 1);
-                if (gameTime >= e3) {
-                    GameManager::getInstance().setX50(0x7000, 0);
+        case 39: {
+            int count = eGet(0, e2);
+            int menuX = eGet(1, e5);
+            int menuY = eGet(2, e6);
+            if (count < 0) count = 0;
+            if (count > 64) count = 64;
+            std::vector<std::string> items;
+            int maxLen = 0;
+            for (int i = 0; i < count; ++i) {
+                int strIdx = GameManager::getInstance().getX50(e3 + i);
+                std::string gbk = GameManager::getInstance().getX50String(strIdx);
+                if ((int)gbk.size() > maxLen) maxLen = (int)gbk.size();
+                items.push_back(TextManager::getInstance().gbkToUtf8(gbk));
+            }
+            int sel = UIManager::getInstance().CommonMenu(menuX, menuY, maxLen * 10 + 3, items);
+            GameManager::getInstance().setX50(e4, sel + 1); // 1-based; 0 = cancel
+            break;
+        }
+        case 40: {
+            int count = eGet(0, e2);
+            int menuX = eGet(1, e5);
+            int menuY = eGet(2, e6);
+            if (count < 0) count = 0;
+            if (count > 64) count = 64;
+            std::vector<std::string> items;
+            int maxLen = 0;
+            for (int i = 0; i < count; ++i) {
+                int strIdx = GameManager::getInstance().getX50(e3 + i);
+                std::string gbk = GameManager::getInstance().getX50String(strIdx);
+                if ((int)gbk.size() > maxLen) maxLen = (int)gbk.size();
+                items.push_back(TextManager::getInstance().gbkToUtf8(gbk));
+            }
+            int visible = (e1 >> 8) & 0xFF;
+            if (visible == 0) visible = 5;
+            int sel = UIManager::getInstance().CommonScrollMenu(menuX, menuY, maxLen * 10 + 3, items, visible);
+            GameManager::getInstance().setX50(e4, sel + 1);
+            break;
+        }
+        case 41: {
+            int x = eGet(0, e3);
+            int y = eGet(1, e4);
+            int pic = eGet(2, e5);
+            // Best-effort: head / item pics; scene/mmap tiles need fuller PicLoader wiring
+            if (e2 == 1) {
+                UIManager::getInstance().DrawHead(pic, x, y);
+            } else if (e2 == 2) {
+                UIManager::getInstance().DrawItemPicWithOffset(pic, x, y);
+            } else {
+                std::cout << "[instruct_50e case 41] draw pic type=" << e2
+                          << " x=" << x << " y=" << y << " id=" << pic << std::endl;
+            }
+            if (GameManager::getInstance().getAutoRefresh() == 0) {
+                VirtualControls::present(UIManager::getInstance().GetRenderer());
+            }
+            break;
+        }
+        case 42: {
+            int my = eGet(0, e2);
+            int mx = eGet(0, e3); // Pascal: Mx:=e3; My:=e2 — both use bit0 of e1
+            GameManager::getInstance().setSavedWorldPosition(mx, my);
+            int sceneId = GameManager::getInstance().getCurrentSceneId();
+            if (sceneId == 0) {
+                GameManager::getInstance().setMainMapPosition(mx, my);
+            }
+            break;
+        }
+        case 44: {
+            int bnum = eGet(0, e2);
+            if (bnum > 100) bnum = GameManager::getInstance().getX50(bnum);
+            int mode = eGet(1, e3);
+            int enumId = eGet(2, e4);
+            int bigAmi = eGet(3, e5);
+            int level = eGet(3, e6); // Pascal also uses bit3 for e6
+            auto& bm = BattleManager::getInstance();
+            int tx = bm.getCursorX(), ty = bm.getCursorY();
+            if (bnum >= 0 && bnum < bm.getBattleRoleCount()) {
+                bm.PlayActionAmination(bnum, mode, tx, ty);
+                bm.PlayMagicAmination(bnum, enumId, level, tx, ty);
+                (void)bigAmi;
+            }
+            break;
+        }
+        case 45: {
+            int mode = eGet(0, e2);
+            switch (mode) {
+                case 1: mode = 0; break;
+                case 2: mode = 2; break;
+                case 3: mode = 4; break;
+                case 4: mode = 3; break;
+                case 5: mode = 1; break;
+            }
+            BattleManager::getInstance().ShowHurtValue(mode);
+            break;
+        }
+        case 46: {
+            int x0 = eGet(0, e2);
+            int y0 = eGet(1, e3);
+            int w = eGet(2, e4);
+            int h = eGet(3, e5);
+            int val = eGet(4, e6);
+            auto& bm = BattleManager::getInstance();
+            for (int i1 = x0; i1 < x0 + w; ++i1) {
+                for (int i2 = y0; i2 < y0 + h; ++i2) {
+                    bm.setBattleField(4, i2, i1, static_cast<int16_t>(val));
+                }
+            }
+            break;
+        }
+        case 47:
+        case 49:
+            break;
+        case 48: {
+            std::cout << "[instruct_50e case 48] x50 dump e1=" << e1 << " count=" << e2 << std::endl;
+            for (int i = e1; i < e1 + e2; ++i) {
+                std::cout << "  x50[" << i << "]=" << GameManager::getInstance().getX50(i) << std::endl;
+            }
+            break;
+        }
+        case 50: {
+            // Enter name into role/item/magic/scene data field (GBK bytes)
+            int kind = eGet(0, e2);
+            int idx = eGet(1, e3);
+            int fieldOff = eGet(2, e4);
+            int maxLen = eGet(3, e5);
+            if (maxLen <= 0) maxLen = 10;
+            if (maxLen > 20) maxLen = 20;
+            // Keep existing name unless we have a UI; log for now
+            std::string cur;
+            switch (kind) {
+                case 0: cur = GameManager::getInstance().getRole(idx).getName(); break;
+                case 1: cur = GameManager::getInstance().getItem(idx).getName(); break;
+                case 2: cur = GameManager::getInstance().getMagic(idx).getName(); break;
+                case 3: {
+                    Scene* sc = SceneManager::getInstance().GetScene(idx);
+                    cur = sc ? sc->getName() : "";
+                    break;
+                }
+            }
+            std::cout << "[instruct_50e case 50] rename kind=" << kind << " idx=" << idx
+                      << " field=" << fieldOff << " keep='" << cur << "'" << std::endl;
+            (void)fieldOff;
+            break;
+        }
+        case 51: {
+            // InputAmount — without UI default 0
+            std::cout << "[instruct_50e case 51] InputAmount stub -> 0" << std::endl;
+            GameManager::getInstance().setX50(e1, 0);
+            break;
+        }
+        case 52: {
+            int rnum = eGet(0, e2);
+            int magic = eGet(1, e3);
+            int level = eGet(2, e4);
+            GameManager::getInstance().setX50(0x7000, 1);
+            if (rnum >= 0 && rnum < GameManager::getInstance().getRoleCount()) {
+                Role& role = GameManager::getInstance().getRole(rnum);
+                for (int i = 0; i < 10; ++i) {
+                    if (role.getMagic(i) == magic) {
+                        int lv = role.getMagLevel(i) / 100 + 1;
+                        if (level < 0 || lv >= level) {
+                            GameManager::getInstance().setX50(0x7000, 0);
+                        }
+                        break;
+                    }
                 }
             }
             break;
         }
         case 43: {
-            int subFunc = e2;
-            int arg3 = e3;
-            int arg4 = e4;
-            int arg5 = e5;
-            int arg6 = e6;
-            if (e1 & 1) subFunc = GameManager::getInstance().getX50(e2);
-            if ((e1 >> 1) & 1) arg3 = GameManager::getInstance().getX50(e3);
-            if ((e1 >> 2) & 1) arg4 = GameManager::getInstance().getX50(e4);
-            if ((e1 >> 3) & 1) arg5 = GameManager::getInstance().getX50(e5);
-            if ((e1 >> 4) & 1) arg6 = GameManager::getInstance().getX50(e6);
+            int subFunc = eGet(0, e2);
+            int arg3 = eGet(1, e3);
+            int arg4 = eGet(2, e4);
+            int arg5 = eGet(3, e5);
+            int arg6 = eGet(4, e6);
             std::cout << "[instruct_50e case 43] subFunc=" << subFunc
                       << " arg3=" << arg3 << " arg4=" << arg4
                       << " arg5=" << arg5 << " arg6=" << arg6 << std::endl;
@@ -2338,9 +2815,12 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             break;
         }
         default:
+            std::cout << "[instruct_50e] unhandled code=" << code
+                      << " e1=" << e1 << " e2=" << e2 << " e3=" << e3
+                      << " e4=" << e4 << " e5=" << e5 << " e6=" << e6 << std::endl;
             break;
     }
-    
+
     return result;
 }
 
@@ -2612,7 +3092,7 @@ void EventManager::Instruct_25(int x1, int y1, int x2, int y2) {
             }
             SceneManager::getInstance().DrawScene(renderer, y1, i); // Draw at (X, Y)
             GameManager::getInstance().RenderScreenTo(renderer);
-            SDL_RenderPresent(renderer);
+            VirtualControls::present(renderer);
             int panDelay = (25 * GameManager::getInstance().getGameSpeed()) / 10;
             SDL_Delay(panDelay);
         }
@@ -2632,7 +3112,7 @@ void EventManager::Instruct_25(int x1, int y1, int x2, int y2) {
             }
             SceneManager::getInstance().DrawScene(renderer, i, x2); // Draw at (X, Y)
             GameManager::getInstance().RenderScreenTo(renderer);
-            SDL_RenderPresent(renderer);
+            VirtualControls::present(renderer);
             SDL_Delay(25);
         }
     }

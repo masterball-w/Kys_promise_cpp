@@ -1,21 +1,20 @@
 #include "GameManager.h"
 #include <iostream>
+#include <SDL3/SDL_main.h>
 
 int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
     std::cout << "Starting KYS C++ Refactor Project..." << std::endl;
     
     GameManager& game = GameManager::getInstance();
     
-    // Initialize the engine and load data
     if (!game.Init()) {
         std::cerr << "Game Initialization Failed!" << std::endl;
         return -1;
     }
     
-    // Enter the main game loop
     game.Run();
-    
-    // Clean up
     game.Quit();
     
     return 0;

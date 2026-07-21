@@ -78,8 +78,28 @@ void GraphicsUtils::ChangeCol(uint32_t ticks) {
 }
 
 uint32_t GraphicsUtils::getPaletteColor(int index) {
-    if (index < 0 || index >= m_currentPaletteRGBA.size()) return 0;
+    if (index < 0 || index >= (int)m_currentPaletteRGBA.size()) return 0;
     return m_currentPaletteRGBA[index];
+}
+
+void GraphicsUtils::setAColByte(int byteIndex, uint8_t value) {
+    if (m_fullPaletteData.empty()) return;
+    // Operate on active set 0 working copy mirrored in m_currentPaletteRGBA
+    // ACol is 768 bytes (256*3). We keep edits on a side buffer sized like set 0.
+    if (m_fullPaletteData.size() < 768) return;
+    if (byteIndex < 0 || byteIndex >= 768) return;
+    m_fullPaletteData[byteIndex] = value;
+    int colorIdx = byteIndex / 3;
+    uint8_t r = m_fullPaletteData[colorIdx * 3 + 0];
+    uint8_t g = m_fullPaletteData[colorIdx * 3 + 1];
+    uint8_t b = m_fullPaletteData[colorIdx * 3 + 2];
+    if (m_currentPaletteRGBA.size() < 256) m_currentPaletteRGBA.resize(256);
+    m_currentPaletteRGBA[colorIdx] = mapRGB(r * 4, g * 4, b * 4);
+}
+
+uint8_t GraphicsUtils::getAColByte(int byteIndex) {
+    if (m_fullPaletteData.empty() || byteIndex < 0 || byteIndex >= 768) return 0;
+    return m_fullPaletteData[byteIndex];
 }
 
 uint32_t GraphicsUtils::mapRGB(uint8_t r, uint8_t g, uint8_t b) {

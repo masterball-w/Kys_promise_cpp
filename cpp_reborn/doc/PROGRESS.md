@@ -1,8 +1,9 @@
 # 金庸群侠前传 C++ 重构：Pascal 对齐进度清单
 
-**更新日期:** 2026-07-20  
+**更新日期:** 2026-07-21  
 **对齐原则:** 以 `kys_*.pas` 玩法级函数为单元；C++ 实现主要在 `cpp_reborn/src/`。状态以**源码实测**为准。  
-**Pascal 真源映射:** [PASCAL_MAPPING.md](PASCAL_MAPPING.md)
+**Pascal 真源映射:** [PASCAL_MAPPING.md](PASCAL_MAPPING.md)  
+**待办与分阶段计划:** [../TODO_LIST.md](../TODO_LIST.md)
 
 **状态图例**
 
@@ -42,8 +43,8 @@
 | [x] | `DrawClouds` / `CloudCreate*` | 云层 | |
 | [~] | `JmpScene` / `SetScene`（雾雨雪） | `Instruct_JmpScene`；天气 | `SetScene` 氛围未完整 |
 | [~] | `findway` / `Moveman` | `Instruct_25` / `Instruct_30` | |
+| [x] | `ShowSceneName` | `UIManager::ShowSceneName` | |
 | [ ] | `ShowMap` | — | Missing |
-| [ ] | `ShowSceneName` | — | Missing / Partial |
 
 ---
 
@@ -145,9 +146,10 @@
 | [~] | `BattleMenuItem` / 医疗/用毒/暗器 | 有 | |
 | [~] | `PlayMagicAmination` / `.eft` | 基础播放 | 深化中 |
 | [~] | `AutoBattle` / `Auto` / `SelectAutoMode` | 基础 AI | 复杂 AI / 模式菜单弱 |
-| [ ] | `PetEffect` | — | Missing/Partial |
+| [~] | `PetEffect` | `BattleManager::PetEffect` | 主路径有；分支保真待验 |
 | [~] | `AddExp` / `CheckLevelUp` / `CheckBook` | 战后流程 | |
 | [ ] | `TeamModeMenu` / `OldBattleMainControl` | — | 旧循环可不迁 |
+| [x] | 功体 BattleState 26/27/28 | `BattleEffects` + `BattleManager` | 叠加/失去功体边界待验 |
 
 ---
 
@@ -173,11 +175,12 @@
 | 状态 | Pascal 单元 | C++ 对应 | 备注 |
 |------|-------------|----------|------|
 | [x] | `Draw*` 族 / `Redraw` / `DrawRectangle` | `SceneManager` + `UIManager` | |
-| [~] | `PlayMP3` / `StopMP3` | `SoundManager`（Win MCI） | 跨平台弱 |
+| [~] | `PlayMP3` / `StopMP3` | `SoundManager`（Win MCI；非 Win WAV） | 统一解码库待做 |
 | [~] | `PlaySound*` | WAV / 部分路径 | |
 | [~] | `CheckBasicEvent` | `InputManager` + 阻塞 `PollEvent` | 架构未统一 |
 | [~] | `rotozoomSurfaceXY` | 战斗/特效用 | |
-| [ ] | `SwitchFullscreen` / 虚拟键 | — | Missing/Partial |
+| [x] | 虚拟键（方向+Esc） | `VirtualControls` | Android 默认；确认键可选增强 |
+| [ ] | `SwitchFullscreen` | — | Missing/Partial |
 
 ---
 
@@ -188,21 +191,25 @@
 | A 启动存读 | ~90% | 低 |
 | B 地图场景 | ~85% | 中（氛围/ShowMap） |
 | C 事件 opcode | ~90% | 中（`50e` 深化） |
-| D 战斗 | ~60–70% | 高（公式/特效/AI） |
+| D 战斗 | ~65–75% | 高（公式/特效/AI；功体 26–28 已落地） |
 | E UI | ~80% | 中（宠物/热键/ShowMap） |
-| F 音频输入 | ~50% | 中（非 Win） |
+| F 音频输入 | ~60% | 中（Android WAV 过渡；统一解码待做） |
 | 小游戏 | ~85% | 主路径已迁；细节保真可继续打磨 |
+| Android 双端 | ~40% | 脚手架+虚拟键已有；真机可玩闭环未完成 |
+| 制作器 | ~70% | 与引擎解耦；场景可视化等可增强 |
 
 ---
 
 ## H. 建议优先补齐顺序
 
-1. **战斗保真** — 对照 `CalHurtValue` / `PlayMagicAmination` / `AutoBattle`。
-2. **`instruct_50e` 逐项验收** — 对照 Pascal 扩展 code。
-3. **小游戏保真打磨** — 射雕轨迹/针灸高亮 crop/作诗 UCS-2 与原版像素级对齐。
-4. **宠物 / 热键 / ShowMap** — 地图界面可后置。
-5. **音频跨平台** — 以 SDL_mixer / SDL3 等价路径替代 MCI。
-6. **文档收敛** — 本文件 + `PROJECT_STATUS.md` / `TODO_LIST.md`。
+详见 [TODO_LIST.md](../TODO_LIST.md) **「下一步：完整开发计划」**（P0–P6）。摘要：
+
+1. **P0 战斗保真** — `CalHurtValue` / 范围 / `.eft` / AI。
+2. **P1 `instruct_50e` + 剧本抽样**。
+3. **P2 Android 真机可玩闭环**。
+4. **P3** 宠物 / 热键 / ShowMap / 氛围。
+5. **P4** 音频统一 + InputManager 收敛。
+6. **P5–P6** 制作器/工程化 → Beta。
 
 ---
 

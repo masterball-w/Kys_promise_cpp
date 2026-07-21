@@ -112,6 +112,15 @@ public:
     int16 getAddUsePoi() const { return m_data[68]; }
     int16 getAddMedPoi() const { return m_data[69]; }
     int16 getAddDefPoi() const { return m_data[70]; }
+
+    // 63-66: Peg / Injury (封穴 / 内伤)
+    int16 getMinPeg() const { return m_data[63]; }
+    int16 getMaxPeg() const { return m_data[64]; }
+    int16 getMinInjury() const { return m_data[65]; }
+    int16 getMaxInjury() const { return m_data[66]; }
+
+    // 77-79: NeedExp[0..2] (功体等阶需求)
+    int16 getNeedExp(int index) const { return (index >= 0 && index < 3) ? m_data[77 + index] : 0; }
     
     // 71: AddFist
     int16 getAddFist() const { return m_data[71]; }

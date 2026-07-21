@@ -56,6 +56,16 @@ public:
     // Target Selection
     bool SelectFriendlyRole(int roleIdx);
     void SelectAuto(int roleIdx);
+    bool SelectAim(int roleIdx, int step);
+
+    // Battle status for instruct_50e
+    int GetBattleResult() const { return m_battleResult; }
+    void SetBattleResult(int v) { m_battleResult = v; }
+    bool IsBattleRunning() const { return m_battleRunning; }
+    int getCurrentRoleIndex() const { return m_currentRoleIndex; }
+    int getCursorX() const { return m_cursorX; }
+    int getCursorY() const { return m_cursorY; }
+    int getMaxRound() const;
     
     // New Selection Helpers
     bool SelectMove(int roleIdx, int& outX, int& outY);
@@ -67,6 +77,7 @@ public:
     void ShowHurtValue(int mode); // 0:Red, 1:Purple, 2:Green, 3:Blue, 4:Cyan
     void ShowHurtValue(const std::string& str, uint32_t color1, uint32_t color2);
     void PlayMagicAmination(int bnum, int magicId, int level, int targetX, int targetY);
+    void PlayActionAmination(int bnum, int mode, int targetX, int targetY);
     
     // Actions
     void Medcine(int roleIdx);
@@ -122,12 +133,10 @@ private:
     // void ApplyMedicine(int healerRoleIdx, int targetRoleIdx); // Moved to public
 
     // Selection Helpers
-    bool SelectAim(int roleIdx, int step);
     bool TeamModeMenu();
     void ShowModeMenu(int menu);
     void ShowTeamModeMenu(int menu);
     void DrawBFieldWithCursor(int attAreaType, int step, int range);
-    void PlayActionAmination(int bnum, int mode, int targetX, int targetY);
     void PlayEffectAmination(int bigami, int amiNum, int targetX, int targetY);
     std::vector<int> SelectTeamMembers(const std::vector<int>& candidates);
     int ReMoveHurt(int targetIdx, int attackerIdx);
@@ -135,9 +144,6 @@ private:
 
     // Load War.sta data for a specific battle
     bool LoadWarData(int battleId);
-    
-    // Battle Result
-    int GetBattleResult() const { return m_battleResult; }
 
     // Battle Roles (BRole array)
     std::vector<BattleRole> m_battleRoles;

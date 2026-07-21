@@ -39,6 +39,8 @@
 ├── build/               # 唯一构建输出（gitignore；勿使用 cpp_reborn/build）
 ├── game_data/           # 本地原版资源存放点（gitignore；勿只放在 build/ 下）
 ├── scripts/             # 辅助脚本（如 link_game_data.ps1）
+├── kys-promise-androidstudio/  # Android 壳（Gradle/JNI；引擎仍用 cpp_reborn）
+├── ANDROID.md           # Android 双端构建与外置资源说明
 ├── SDL3-3.4.0/          # 预置 SDL3（Windows 开发便利）
 ├── SDL3_image-3.2.6/
 ├── SDL3_ttf-3.1.0/
@@ -48,6 +50,8 @@
 ```
 
 **构建约定：** 源码在 `cpp_reborn/`，产物只进仓库根目录 `build/`。不要再创建或使用 `cpp_reborn/build/`。
+
+**双端（方案 A）：** 一套 `cpp_reborn` 源码。桌面编 `kys_cpp`；Android 经 Studio 编出 `libkys_promise.so`。详见 [ANDROID.md](ANDROID.md)。
 
 ---
 

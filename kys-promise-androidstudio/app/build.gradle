@@ -15,8 +15,14 @@ android {
         versionName "1.0"
         externalNativeBuild {
             cmake {
-                arguments "-DANDROID_PLATFORM=android-29", "-DANDROID_STL=c++_shared"
-                // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                // NDK clang++.exe on Windows defaults to windows-gnu; CMake does not
+                // always pass CMAKE_CXX_COMPILER_TARGET into try_compile. Inject --target.
+                arguments "-DANDROID_PLATFORM=android-29",
+                        "-DANDROID_STL=c++_shared",
+                        "-DCMAKE_C_FLAGS=--target=aarch64-linux-android29",
+                        "-DCMAKE_CXX_FLAGS=--target=aarch64-linux-android29",
+                        "-DCMAKE_EXE_LINKER_FLAGS=--target=aarch64-linux-android29",
+                        "-DCMAKE_SHARED_LINKER_FLAGS=--target=aarch64-linux-android29"
                 abiFilters 'arm64-v8a'
             }
         }
@@ -39,16 +45,16 @@ android {
             .dependsOn("externalNativeBuild${variant.name.capitalize()}")
 
     }
+    // Native libs come only from CMake (SDL3 + kys_promise). No prebuilt jniLibs/.
+    // NDK 27 + SDK CMake 3.22 breaks CXX link tests (lld --no-rosegment); pin newer CMake.
+    ndkVersion "27.0.12077973"
     if (!project.hasProperty('EXCLUDE_NATIVE_LIBS')) {
-        sourceSets.main {
-            jniLibs.srcDir 'lib'
-        }
         externalNativeBuild {
-                cmake {
-                    path 'jni/CMakeLists.txt'
-                }
+            cmake {
+                path 'jni/CMakeLists.txt'
+                version '3.31.6'
+            }
         }
-
     }
     lint {
         abortOnError = false

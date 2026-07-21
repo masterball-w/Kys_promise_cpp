@@ -8,14 +8,22 @@
 #include "TextManager.h"
 #include "InputManager.h"
 #include "SoundManager.h"
+#include "PlatformCompat.h"
+#include "VirtualControls.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
 #include <random>
-#include <direct.h> // For _getcwd on Windows
-#include <io.h>     // For access
+#include <filesystem>
+
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
 #define getcwd _getcwd
 #define access _access
+#else
+#include <unistd.h>
+#endif
 
 namespace {
     void PopBackUtf8(std::string& s) {
@@ -97,6 +105,9 @@ bool GameManager::Init() {
     // SDL3: SDL_SetRenderLogicalPresentation(renderer, w, h, mode)
     SDL_SetRenderLogicalPresentation(m_renderer, 640, 480, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 
+    VirtualControls::init();
+    VirtualControls::setRenderer(m_renderer);
+
     m_screenSurface = SDL_CreateSurface(640, 480, SDL_PIXELFORMAT_ARGB8888);
     m_screenTexture = SDL_CreateTexture(m_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480);
 
@@ -170,28 +181,25 @@ bool GameManager::Init() {
     loadMMapLayer("resource/buildy.002", m_buildY);
     m_entrance.resize(480 * 480, -1);
 
-    // Find Save Directory
-    std::string savePrefix = "../save/";
-    if (access((savePrefix + "ranger.grp").c_str(), 0) != 0) {
-        savePrefix = "../../save/";
-        if (access((savePrefix + "ranger.grp").c_str(), 0) != 0) {
-            savePrefix = "../../../save/";
-             if (access((savePrefix + "ranger.grp").c_str(), 0) != 0) {
-                 savePrefix = "save/"; // Try current dir
-             }
+    // Find Save Directory (cross-platform)
+    std::string savePrefix = FileLoader::getSaveDir();
+    // If template ranger is not in writable save dir, fall back to dataRoot/save
+    {
+        std::string dataSave = FileLoader::getDataRoot() + "save/";
+        auto existsRanger = [](const std::string& dir) {
+            return access((dir + "ranger.grp").c_str(), 0) == 0
+                || access((dir + "Ranger.grp").c_str(), 0) == 0;
+        };
+        if (!existsRanger(savePrefix) && existsRanger(dataSave)) {
+            savePrefix = dataSave;
         }
     }
-    
-    // Convert to absolute path to bypass FileLoader's resource prefixing
-    char absPath[1024];
-    if (_fullpath(absPath, savePrefix.c_str(), 1024) != NULL) {
-        savePrefix = std::string(absPath) + "\\";
-    }
-    
-    // Store save path for later use (e.g. InitNewGame)
+
     m_savePath = savePrefix;
     
     std::cout << "[GameManager] Discovered Save Path: " << savePrefix << std::endl;
+
+    PlatformCompat::installInputCompat();
 
     // Load initial data
     std::cout << "[GameManager] Loading Scene Data from " << savePrefix << std::endl;
@@ -1142,7 +1150,7 @@ void GameManager::InitNewGame() {
     }
     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
     if (m_screenSurface) RenderScreenTo(m_renderer);
-    SDL_RenderPresent(m_renderer);
+    VirtualControls::present(m_renderer);
 
     InputManager::getInstance().FlushEvents();
     std::cout << "[InitNewGame] Triggering Opening Event 101..." << std::endl;
@@ -1155,7 +1163,7 @@ void GameManager::InitNewGame() {
     }
     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
     if (m_screenSurface) RenderScreenTo(m_renderer);
-    SDL_RenderPresent(m_renderer);
+    VirtualControls::present(m_renderer);
     UIManager::getInstance().ShowSceneName(m_currentSceneId);
 
     // Pascal CheckEvent3: walk-on script at current tile
@@ -1284,7 +1292,7 @@ void GameManager::UpdateTitleScreen() {
     
     UIManager::getInstance().DrawTitleBackground();
     DrawTitleMenu();
-    SDL_RenderPresent(m_renderer);
+    VirtualControls::present(m_renderer);
 }
 
 void GameManager::ReturnToTitleScreen() {
@@ -1383,7 +1391,7 @@ void GameManager::UpdateCharacterCreation() {
     } else if (getRoleCount() > 0) {
         UIManager::getInstance().DrawCharacterCreationAttributes(getRole(0));
     }
-    SDL_RenderPresent(m_renderer);
+    VirtualControls::present(m_renderer);
 }
 
 void GameManager::getFacingTile(int& x, int& y) const {
@@ -1539,7 +1547,7 @@ void GameManager::UpdateRoaming() {
                     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
                     RenderScreenTo(m_renderer);
                 }
-                SDL_RenderPresent(m_renderer);
+                VirtualControls::present(m_renderer);
                 SDL_Delay(100); // 短暂延迟，让玩家看到朝向改变
                 
                 if (TryEnterScene(snum)) {
@@ -1632,22 +1640,25 @@ void GameManager::UpdateRoaming() {
 
     uint32_t now = SDL_GetTicks();
     const bool* keys = SDL_GetKeyboardState(nullptr);
+    auto keyDown = [&](SDL_Scancode sc) {
+        return keys[sc] || VirtualControls::isScancodeDown(sc);
+    };
     int holdDx = 0;
     int holdDy = 0;
     const bool inScene = (m_currentSceneId >= 0);
-    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W]) {
+    if (keyDown(SDL_SCANCODE_UP) || keyDown(SDL_SCANCODE_W)) {
         holdDx = -1;
         if (inScene) applySceneDirection(*this, 0);
         else applyWorldDirection(*this, -1, 0);
-    } else if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S]) {
+    } else if (keyDown(SDL_SCANCODE_DOWN) || keyDown(SDL_SCANCODE_S)) {
         holdDx = 1;
         if (inScene) applySceneDirection(*this, 3);
         else applyWorldDirection(*this, 1, 0);
-    } else if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A]) {
+    } else if (keyDown(SDL_SCANCODE_LEFT) || keyDown(SDL_SCANCODE_A)) {
         holdDy = -1;
         if (inScene) applySceneDirection(*this, 2);
         else applyWorldDirection(*this, 0, -1);
-    } else if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) {
+    } else if (keyDown(SDL_SCANCODE_RIGHT) || keyDown(SDL_SCANCODE_D)) {
         holdDy = 1;
         if (inScene) applySceneDirection(*this, 1);
         else applyWorldDirection(*this, 0, 1);
@@ -1680,7 +1691,7 @@ void GameManager::UpdateRoaming() {
         SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
         RenderScreenTo(m_renderer);
     }
-    SDL_RenderPresent(m_renderer);
+    VirtualControls::present(m_renderer);
 }
 
 bool GameManager::CanWalkWorld(int x, int y) {
@@ -1916,15 +1927,7 @@ void GameManager::enterScene(int sceneId) {
 
 void GameManager::AddItem(int itemId, int amount) {
     if (amount == 0) return;
-    if ((int)m_inventory.size() != MAX_ITEM_AMOUNT) {
-        m_inventory.resize(MAX_ITEM_AMOUNT);
-        for (int i = 0; i < MAX_ITEM_AMOUNT; ++i) {
-            if (m_inventory[i].id == 0 && m_inventory[i].amount == 0) {
-                m_inventory[i].id = -1;
-                m_inventory[i].amount = 0;
-            }
-        }
-    }
+    ensureInventorySize();
     for (auto it = m_inventory.begin(); it != m_inventory.end(); ++it) {
         if (it->id == itemId) {
             int newAmount = it->amount + amount;
@@ -1949,6 +1952,30 @@ void GameManager::AddItem(int itemId, int amount) {
             return;
         }
     }
+}
+
+void GameManager::ensureInventorySize() {
+    if ((int)m_inventory.size() != MAX_ITEM_AMOUNT) {
+        m_inventory.resize(MAX_ITEM_AMOUNT);
+        for (int i = 0; i < MAX_ITEM_AMOUNT; ++i) {
+            if (m_inventory[i].id == 0 && m_inventory[i].amount == 0) {
+                m_inventory[i].id = -1;
+                m_inventory[i].amount = 0;
+            }
+        }
+    }
+}
+
+void GameManager::setInventorySlot(int slot, int16_t number, int16_t amount) {
+    ensureInventorySize();
+    if (slot < 0 || slot >= MAX_ITEM_AMOUNT) return;
+    m_inventory[slot].id = number;
+    m_inventory[slot].amount = amount;
+}
+
+InventoryItem GameManager::getInventorySlot(int slot) const {
+    if (slot < 0 || slot >= (int)m_inventory.size()) return InventoryItem{};
+    return m_inventory[slot];
 }
 
 int GameManager::getItemAmount(int itemId) {

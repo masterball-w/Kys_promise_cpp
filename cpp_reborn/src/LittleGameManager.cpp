@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <random>
+#include "VirtualControls.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -35,7 +36,7 @@ bool LittleGameManager::HasPetLuck() const {
 }
 
 void LittleGameManager::Present() {
-    SDL_RenderPresent(UIManager::getInstance().GetRenderer());
+    VirtualControls::present(UIManager::getInstance().GetRenderer());
 }
 
 void LittleGameManager::WaitAnyKeyLocal() {

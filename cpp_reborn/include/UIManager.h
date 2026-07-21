@@ -69,6 +69,9 @@ public:
     // Enter=挑战, Esc=放弃(失败). Does not silently auto-pass.
     bool RunMiniGame(const std::string& titleUtf8, const std::string& hintUtf8, int chancePercent);
     bool ShowSaveLoadMenu(bool isSave); // Shows save/load slots
+    // Pascal CommonMenu / CommonScrollMenu — returns 0..n-1, or -1 on cancel
+    int CommonMenu(int x, int y, int width, const std::vector<std::string>& itemsUtf8);
+    int CommonScrollMenu(int x, int y, int width, const std::vector<std::string>& itemsUtf8, int visibleCount);
     void ShowVolumeMenu();
     void ShowDialogue(const std::string& text, int headId, int mode, const std::string& nameUtf8 = "", const std::string& nameRawBytes = "", int colorIndex = -1);
     void ShowTitle(const std::string& text, int x, int y, uint32_t color1, uint32_t color2);

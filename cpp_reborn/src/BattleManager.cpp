@@ -21,6 +21,7 @@
 #include <fstream>
 #include <unordered_map>
 #include <vector>
+#include "VirtualControls.h"
 #ifdef _WIN32
 #include <direct.h>
 #define getcwd _getcwd
@@ -46,6 +47,16 @@ static int GetMagicLevel(int rnum, int mnum) {
         }
     }
     return -1;
+}
+
+/** Pascal: MagLevel div 100 + 1, clamped to 1..10 */
+static int GetMagicBattleLevel(int rnum, int mnum) {
+    int raw = GetMagicLevel(rnum, mnum);
+    if (raw < 0) return 1;
+    int level = raw / 100 + 1;
+    if (level < 1) level = 1;
+    if (level > 10) level = 10;
+    return level;
 }
 
 static uint32_t PaletteToRgba(uint32_t color) {
@@ -491,6 +502,21 @@ static int GetRoleUsePoi(int rnum, bool equip) {
     return result;
 }
 
+static int GetRoleAttPoi(int rnum, bool equip) {
+    Role& role = GameManager::getInstance().getRole(rnum);
+    int result = role.getAttPoi();
+    if (equip) {
+        for (int i = 0; i < 5; ++i) {
+            int itemId = role.getEquip(i);
+            if (itemId >= 0) {
+                Item& item = GameManager::getInstance().getItem(itemId);
+                result += item.getAddAttPoi();
+            }
+        }
+    }
+    return result;
+}
+
 static int GetRoleHidWeapon(int rnum, bool equip) {
     Role& role = GameManager::getInstance().getRole(rnum);
     return role.getHidWeapon();
@@ -896,22 +922,46 @@ void BattleManager::AddExp() {
 
 void BattleManager::CheckLevelUp() {
     int maxLevel = GameManager::getInstance().getMaxLevel();
-    int maxHp = 999 + GameManager::getInstance().getGameTime() * 100;
-    int maxMp = 999 + GameManager::getInstance().getGameTime() * 100;
-    
-    for (auto& role : m_battleRoles) {
-        if (role.getTeam() == 0 && role.getRNum() >= 0) {
-            Role& r = GameManager::getInstance().getRole(role.getRNum());
-            while (r.getLevel() < maxLevel && r.getExp() >= LEVEL_UP_LIST[std::min(r.getLevel() - 1, 29)]) {
-                r.setExp(r.getExp() - LEVEL_UP_LIST[std::min(r.getLevel() - 1, 29)]);
-                r.setLevel(r.getLevel() + 1);
-                
-                r.setCurrentHP(std::min(r.getCurrentHP() + 3 * LIFE_HURT, maxHp)); 
-                r.setMaxHP(std::min(r.getMaxHP() + 3 * LIFE_HURT, maxHp));
-                r.setMaxMP(std::min(r.getMaxMP() + 2 * LIFE_HURT, maxMp));
-                r.setCurrentMP(std::min(r.getCurrentMP() + 2 * LIFE_HURT, maxMp));
-                
-                std::cout << "Role " << role.getRNum() << " Level Up to " << r.getLevel() << std::endl;
+    // Pascal LevelUp: aptitude-based HP/MP growth + odd-level Atk/Spd/Def + skill ticks
+    for (int bi = 0; bi < (int)m_battleRoles.size(); ++bi) {
+        BattleRole& br = m_battleRoles[bi];
+        if (br.getTeam() != 0 || br.getRNum() < 0) continue;
+        Role& r = GameManager::getInstance().getRole(br.getRNum());
+        int rnum = br.getRNum();
+
+        while (r.getLevel() < maxLevel &&
+               r.getExp() >= LEVEL_UP_LIST[std::min(r.getLevel() - 1, 29)]) {
+            r.setExp(r.getExp() - LEVEL_UP_LIST[std::min(r.getLevel() - 1, 29)]);
+            r.setLevel(r.getLevel() + 1);
+
+            int addPool = (150 - r.getAptitude()) / 10 + (std::rand() % 3) + 1;
+            r.setMaxHP(std::min(MAX_HP, r.getMaxHP() + addPool));
+            r.setCurrentHP(r.getMaxHP());
+            r.setMaxMP(std::min(MAX_MP, r.getMaxMP() + addPool));
+            r.setCurrentMP(r.getMaxMP());
+
+            if (r.getLevel() % 2 == 1) {
+                r.setAttack(r.getAttack() + 1);
+                r.setSpeed(r.getSpeed() + 1);
+                r.setDefence(r.getDefence() + 1);
+            }
+
+            if (GetRoleMedcine(rnum, false) >= 20) r.setMedcine(r.getMedcine() + 1);
+            if (GetRoleUsePoi(rnum, false) >= 20) r.setUsePoi(r.getUsePoi() + 1);
+            if (GetRoleMedPoi(rnum, false) >= 20) r.setMedPoi(r.getMedPoi() + 1);
+            if (GetRoleFist(rnum, false) >= 20) r.setFist(std::min(200, r.getFist() + 1));
+            if (GetRoleSword(rnum, false) >= 20) r.setSword(std::min(200, r.getSword() + 1));
+            if (GetRoleKnife(rnum, false) >= 20) r.setKnife(std::min(200, r.getKnife() + 1));
+            if (GetRoleUnusual(rnum, false) >= 20) r.setUnusual(std::min(200, r.getUnusual() + 1));
+            if (GetRoleHidWeapon(rnum, false) >= 20) r.setHidWeapon(std::min(200, r.getHidWeapon() + 1));
+
+            r.setPhyPower(MAX_PHYSICAL_POWER);
+            r.setHurt(0);
+            r.setPoision(0);
+
+            std::cout << "Role " << rnum << " Level Up to " << r.getLevel() << std::endl;
+            if (br.getTeam() == 0) {
+                UIManager::getInstance().ShowStatus(rnum);
             }
         }
     }
@@ -1341,7 +1391,7 @@ void BattleManager::RunBattle() {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
         GameManager::getInstance().RenderScreenTo(renderer);
-        SDL_RenderPresent(renderer);
+        VirtualControls::present(renderer);
     }
 
     if (m_battleResult == 1 || (m_battleResult == 2 && m_getExp != 0)) {
@@ -1928,17 +1978,24 @@ void BattleManager::AutoBattle(int roleIdx) {
         Role& tData = GameManager::getInstance().getRole(target.getRNum());
         Role& aData = GameManager::getInstance().getRole(actor.getRNum());
         
-        // Try to use the first available magic
+        // Try best available offensive magic (skip 内功 type 5)
         int magicId = -1;
         int level = 1;
-        for(int i=0; i<10; i++) {
-             int m = aData.getMagic(i);
-             if (m > 0) {
-                 magicId = m;
-                 level = aData.getMagLevel(i) / 100;
-                 if (level < 1) level = 1; 
-                 break;
-             }
+        int bestScore = -1;
+        for (int i = 0; i < 10; i++) {
+            int m = aData.getMagic(i);
+            if (m <= 0) continue;
+            Magic& mg = GameManager::getInstance().getMagic(m);
+            if (mg.getMagicType() == 5) continue;
+            int lv = GetMagicBattleLevel(actor.getRNum(), m);
+            if (mg.getNeedMP() * lv > aData.getCurrentMP()) continue;
+            // Prefer higher MagLevel and longer reach
+            int score = aData.getMagLevel(i) + mg.getAttDistance(lv - 1) * 20 + mg.getMoveDistance(lv - 1) * 10;
+            if (score > bestScore) {
+                bestScore = score;
+                magicId = m;
+                level = lv;
+            }
         }
 
         // Calculate move and attack positions
@@ -1949,19 +2006,25 @@ void BattleManager::AutoBattle(int roleIdx) {
         int bestDistAfterMove = minDist;
         int attackX = -1, attackY = -1;
         
-        // Find best position to move to and attack from
         int attackRange = 1;
+        int moveStep = 1;
         if (magicId > 0) {
             Magic& magic = GameManager::getInstance().getMagic(magicId);
             attackRange = magic.getAttDistance(level - 1);
-            if (attackRange < 1) attackRange = 1;
+            moveStep = magic.getMoveDistance(level - 1);
+            if (CheckEquipSet(aData.getEquip(0), aData.getEquip(1), aData.getEquip(2), aData.getEquip(3)) == 1) moveStep += 1;
+            if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), 22)) moveStep += 1;
+            if (attackRange < 0) attackRange = 0;
+            if (moveStep < 0) moveStep = 0;
         }
         
         for(int x=0; x<64; x++) {
             for(int y=0; y<64; y++) {
                 if (m_battleField[3][x][y] >= 0) {
                     int d = std::abs(x - target.getX()) + std::abs(y - target.getY());
-                    if (d <= attackRange && d < bestDistAfterMove) {
+                    // Can cast if within MoveDistance of caster after move (select aim cell)
+                    // For area types 0/3/6: aim at enemy if manhattan(movePos, enemy) <= moveStep
+                    if (d <= moveStep && d < bestDistAfterMove) {
                         bestDistAfterMove = d;
                         bestMoveX = x;
                         bestMoveY = y;
@@ -2714,118 +2777,255 @@ int BattleManager::CalHurtValue(int attackerIdx, int targetIdx, int magicId, int
     return (int)result;
 }
 
-// Applies damage to roles in range
+// Applies damage to roles in range — aligned with kys_battle.pas CalHurtRole
 void BattleManager::CalHurtRole(int attackerIdx, int magicId, int level) {
-    if (attackerIdx < 0 || attackerIdx >= m_battleRoles.size()) return;
+    if (attackerIdx < 0 || attackerIdx >= (int)m_battleRoles.size()) return;
     BattleRole& attacker = m_battleRoles[attackerIdx];
     int rnum = attacker.getRNum();
+    if (rnum < 0) return;
     Role& attRole = GameManager::getInstance().getRole(rnum);
     Magic& magic = GameManager::getInstance().getMagic(magicId);
+    const int battleMode = GameManager::getInstance().getBattleMode();
 
-    // Iterate all roles to see if they are in range
-    for (int i = 0; i < m_battleRoles.size(); ++i) {
+    for (auto& br : m_battleRoles) {
+        br.setShowNumber(-1);
+    }
+
+    // Reduce level if MP insufficient
+    if (magic.getNeedMP() > 0 && attRole.getCurrentMP() < magic.getNeedMP() * level) {
+        level = attRole.getCurrentMP() / std::max(1, (int)magic.getNeedMP());
+    }
+    if (level > 10) level = 10;
+    if (level < 0) level = 0;
+    int needmp = magic.getNeedMP() * level;
+
+    int addhpvalue = 0;
+    int addmpvalue = 0;
+
+    auto hasNegImmune = [&](int trnum) {
+        Role& tr = GameManager::getInstance().getRole(trnum);
+        return GameManager::getInstance().CheckBattleEffect(trnum, 12)
+            || CheckEquipSet(tr.getEquip(0), tr.getEquip(1), tr.getEquip(2), tr.getEquip(3)) == 4;
+    };
+
+    for (int i = 0; i < (int)m_battleRoles.size(); ++i) {
         BattleRole& originalTarget = m_battleRoles[i];
         if (originalTarget.getDead() || originalTarget.getRNum() < 0) continue;
-        
-        // Check if in Attack Range (Marked in Layer 4)
         if (m_battleField[4][originalTarget.getX()][originalTarget.getY()] == 0) continue;
-        
-        // Friendly Fire Check
-        if (originalTarget.getTeam() == attacker.getTeam() && attackerIdx != i) continue;
-        
-        // 1. Calculate Base Damage
-        int hurt = CalHurtValue(attackerIdx, i, magicId, level);
-        
-        // 2. Apply Damage Boosts (Effects)
-        bool boost = false;
-        // Specific Boost (State 14 + MagicType)
-        if (GameManager::getInstance().CheckBattleEffect(rnum, 14 + magic.getMagicType())) boost = true;
-        // All Boost (State 13)
-        if (GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::DamageBoost_All)) boost = true;
-        // Female Boost (State 2)
-        if (attRole.getSexual() == 1 && GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::DamageBoost_Female)) boost = true;
-        
-        if (boost) hurt = hurt * 13 / 10;
-        
-        // 3. Dodge Boost (Target Effect)
-        int dodge = 0;
-        int tnum = originalTarget.getRNum();
-        if (GameManager::getInstance().CheckBattleEffect(tnum, BattleEffectType::Dodge_Boost)) {
-            dodge += 30;
-        }
-        
-        // 4. Random Damage (Attacker Effect)
-        if (GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::Damage_Random)) {
-             hurt = (hurt * (7 + ((attRole.getLevel() - 1) % 10))) / 10;
-        }
-        
-        // 5. Transfer / Reflect (Target Effect)
-        int finalTargetIdx = i;
-        if (GameManager::getInstance().CheckBattleEffect(tnum, BattleEffectType::Transfer_Damage)) {
-            finalTargetIdx = ReMoveHurt(i, attackerIdx);
-        }
-        if (GameManager::getInstance().CheckBattleEffect(tnum, BattleEffectType::Reflect_Damage)) {
-            finalTargetIdx = RetortHurt(i, attackerIdx);
-        }
-        
-        BattleRole& finalTarget = m_battleRoles[finalTargetIdx];
-        Role& tData = GameManager::getInstance().getRole(finalTarget.getRNum());
-        
-        // 6. Critical / Angry Logic
+        // Pascal: only hit enemies; never self
+        if (originalTarget.getTeam() == attacker.getTeam() || attackerIdx == i) continue;
+
         int bang = 0;
-        // Assuming m_battleMode > 1 (Standard Battle)
-        bang += attRole.getAngry() / 5;
-        dodge += tData.getAngry() / 10;
-        bang = std::min(bang, 100);
-        dodge = std::min(dodge, 100);
-        
-        int angryGain = (hurt * 50) / std::max(1, (int)tData.getMaxHP());
-        if (angryGain <= 0) angryGain = 1;
-        tData.setAngry(std::min(100, tData.getAngry() + angryGain));
-        
-        if ((rand() % 100) < (bang - 1)) hurt = hurt * 13 / 10;
-        if ((rand() % 100) < dodge) hurt = 0;
-        
-        // 7. Apply Damage
-        // HurtType 0: HP Damage
-        if (magic.getHurtType() == 0) {
-            hurt = std::min((int)tData.getCurrentHP(), hurt);
-            tData.setCurrentHP(std::max(0, tData.getCurrentHP() - hurt));
-            if (tData.getCurrentHP() <= 0) {
-                finalTarget.setDead(1);
-                attacker.setExpGot(attacker.getExpGot() + tData.getLevel() * 10);
+        int dodge = std::min(1, (int)originalTarget.getAddDodge()) * 30;
+        if (originalTarget.getPerfectDodge() > 0) dodge = 100;
+
+        int hurt = CalHurtValue(attackerIdx, i, magicId, level);
+
+        // Team-0 NeedProgress bonus
+        if (attacker.getTeam() == 0 && battleMode > 0) {
+            hurt += (hurt * magic.getNeedProgress() * level) / 20;
+        }
+        // 内伤影响：目标受伤越多伤害越高；攻击者内伤越多伤害越低
+        Role& origData = GameManager::getInstance().getRole(originalTarget.getRNum());
+        hurt = (hurt * (400 + origData.getHurt())) / 400;
+        hurt = (hurt * (400 - attRole.getHurt())) / 400;
+
+        // 酒：加攻 / 加防状态
+        if (attacker.getAddAtt() > 0) {
+            hurt = (int)(hurt * 1.4);
+            if (GameManager::getInstance().CheckBattleEffect(rnum, 3)) {
+                hurt = (int)(hurt * 1.4);
             }
         }
-        // HurtType 1: MP Damage
-        else if (magic.getHurtType() == 1) {
-            hurt = std::min((int)tData.getCurrentMP(), hurt);
-            tData.setCurrentMP(std::max(0, tData.getCurrentMP() - hurt));
-        }
-        
-        finalTarget.setShowNumber(hurt);
-        if (hurt > 0) {
-            finalTarget.setFlashTimer(12);
-        }
-        
-        // 8. Absorb MP (Gongti Effect)
-        int gongti = attRole.getGongti();
-        if (gongti > 0) {
-            Magic& gMagic = GameManager::getInstance().getMagic(gongti);
-            int gLevel = GameManager::getInstance().GetGongtiLevel(rnum, gongti);
-            if (gLevel >= gMagic.getMaxLevel() && gMagic.getAddMpScale() > 0) {
-                int hurtMp = (hurt * gMagic.getAddMpScale()) / 100;
-                if (hurtMp > tData.getCurrentMP()) hurtMp = tData.getCurrentMP(); // Drain limit
-                tData.setCurrentMP(std::max(0, tData.getCurrentMP() - hurtMp));
-                attRole.setCurrentMP(std::min((int)attRole.getMaxMP(), attRole.getCurrentMP() + hurtMp));
+        if (originalTarget.getAddDef() > 0) {
+            hurt = (int)(hurt * 0.6);
+            if (GameManager::getInstance().CheckBattleEffect(originalTarget.getRNum(), 3)) {
+                hurt = (int)(hurt * 0.6);
             }
         }
-        
-        // 9. Absorb HP (Equip/Gongti Effect 21)
-        if (GameManager::getInstance().CheckBattleEffect(rnum, BattleEffectType::Absorb_HP)) {
-             attRole.setCurrentHP(std::min((int)attRole.getMaxHP(), attRole.getCurrentHP() + hurt / 3));
+
+        const bool hurtHp = (magic.getHurtType() == 0);
+        const bool hurtMp = (magic.getHurtType() == 1);
+
+        if (hurtHp || hurtMp) {
+            // 威力加成：HP 用 14+type，吸星用 15+type；13 全体；2 女性
+            int typeBoostBase = hurtHp ? 14 : 15;
+            bool boost = GameManager::getInstance().CheckBattleEffect(rnum, typeBoostBase + magic.getMagicType())
+                || GameManager::getInstance().CheckBattleEffect(rnum, 13)
+                || (attRole.getSexual() == 1 && GameManager::getInstance().CheckBattleEffect(rnum, 2));
+            if (boost) hurt = (int)(hurt * 1.3);
+
+            if (GameManager::getInstance().CheckBattleEffect(originalTarget.getRNum(), 8)) {
+                dodge += 30;
+            }
+
+            if (GameManager::getInstance().CheckBattleEffect(rnum, 9)) {
+                if (hurtHp) {
+                    hurt = (hurt * (7 + ((attRole.getLevel() - 1) % 10))) / 10;
+                } else {
+                    hurt = (int)(hurt * (1.0 + ((std::rand() % 3) - 1) * 0.5));
+                }
+            }
+
+            int n = i;
+            if (GameManager::getInstance().CheckBattleEffect(originalTarget.getRNum(), 4)) {
+                n = ReMoveHurt(i, attackerIdx);
+            }
+            if (GameManager::getInstance().CheckBattleEffect(originalTarget.getRNum(), 5)) {
+                n = RetortHurt(i, attackerIdx);
+            }
+            if (n < 0 || n >= (int)m_battleRoles.size()) n = i;
+
+            BattleRole& finalTarget = m_battleRoles[n];
+            Role& tData = GameManager::getInstance().getRole(finalTarget.getRNum());
+
+            if (battleMode > 1) {
+                bang += attRole.getAngry() / 5;
+                dodge += tData.getAngry() / 10;
+                bang = std::min(bang, 100);
+                dodge = std::min(dodge, 100);
+                int angryGain = (hurt * 50) / std::max(1, (int)tData.getMaxHP());
+                if (angryGain <= 0) angryGain = 1;
+                tData.setAngry(std::min(100, tData.getAngry() + angryGain));
+            }
+            if ((std::rand() % 100) < (bang - 1)) hurt = (int)(hurt * 1.3);
+            if ((std::rand() % 100) < dodge) hurt = 0;
+
+            finalTarget.setShowNumber(hurt);
+
+            if (hurtHp) {
+                hurt = std::min((int)tData.getCurrentHP(), hurt);
+                tData.setCurrentHP(std::max(0, tData.getCurrentHP() - hurt));
+                if (tData.getCurrentHP() <= 0) {
+                    finalTarget.setDead(1);
+                    attacker.setKilled(attacker.getKilled() + 1);
+                    attacker.setExpGot(attacker.getExpGot() + tData.getLevel() * 10);
+                }
+            } else {
+                hurt = std::min((int)tData.getCurrentMP(), hurt);
+                tData.setCurrentMP(std::max(0, tData.getCurrentMP() - hurt));
+            }
+
+            if (hurt > 0) {
+                finalTarget.setFlashTimer(12);
+            }
+
+            // 武功自带回血回内比例（对本次 hurt）
+            addmpvalue += (magic.getAddMpScale() * hurt) / 100;
+            // 功体吸内
+            int gongti = attRole.getGongti();
+            if (gongti > 0) {
+                Magic& gMagic = GameManager::getInstance().getMagic(gongti);
+                int gLvIndex = std::min(2, std::max(0, (int)gMagic.getMaxLevel()));
+                int needExp = gMagic.getNeedExp(gLvIndex);
+                if (needExp <= GetMagicLevel(rnum, gongti) && gMagic.getAddMpScale() > 0) {
+                    int hurtmp = (hurt * gMagic.getAddMpScale()) / 100;
+                    // Pascal drains original cell i's MP; keep that quirk for fidelity
+                    Role& drainRole = GameManager::getInstance().getRole(originalTarget.getRNum());
+                    if (hurtmp > drainRole.getCurrentMP()) {
+                        // Pascal assigns leftover into hurt (unused afterward) — drain full CurrentMP path:
+                        hurtmp = drainRole.getCurrentMP();
+                    }
+                    drainRole.setCurrentMP(std::max(0, drainRole.getCurrentMP() - hurtmp));
+                    addmpvalue += hurtmp;
+                }
+            }
+
+            addhpvalue += (magic.getAddHpScale() * hurt) / 100;
+            if (GameManager::getInstance().CheckBattleEffect(rnum, 21)) {
+                addhpvalue += hurt / 10;
+            }
+            if (gongti > 0) {
+                Magic& gMagic = GameManager::getInstance().getMagic(gongti);
+                if (GetGongtiLevel(rnum, gongti) == gMagic.getMaxLevel() && gMagic.getAddHpScale() > 0) {
+                    addhpvalue += (magic.getAddHpScale() * hurt) / 100;
+                }
+            }
+
+            if (hurt > 0) {
+                int tn = finalTarget.getRNum();
+                if (!hasNegImmune(tn)) {
+                    int addpoi = GetRoleAttPoi(rnum, true) + magic.getPoision() * level
+                        - GetRoleDefPoi(tn, true);
+                    if (addpoi + tData.getPoision() > 99) addpoi = 99 - tData.getPoision();
+                    if (addpoi < 0) addpoi = 0;
+                    if (GetRoleDefPoi(tn, true) >= 99) addpoi = 0;
+                    tData.setPoision(tData.getPoision() + addpoi);
+                }
+
+                if (!hasNegImmune(tn)
+                    && !GameManager::getInstance().CheckBattleEffect(tn, 6)) {
+                    int injury = ((magic.getMaxInjury() - magic.getMinInjury()) * (level - 1)) / 9
+                        + magic.getMinInjury();
+                    if (GameManager::getInstance().CheckBattleEffect(rnum, 19)) injury += 30;
+                    if (CheckEquipSet(attRole.getEquip(0), attRole.getEquip(1),
+                                      attRole.getEquip(2), attRole.getEquip(3)) == 3) {
+                        injury = 100;
+                    }
+                    if ((std::rand() % 100) < injury) {
+                        tData.setHurt(std::min(100, tData.getHurt() + (int)std::lround(hurt / 10.0)));
+                    }
+                }
+
+                if (!hasNegImmune(tn)) {
+                    int frozen = ((magic.getMaxPeg() - magic.getMinPeg()) * (level - 1)) / 9
+                        + magic.getMinPeg();
+                    if (GameManager::getInstance().CheckBattleEffect(rnum, 20)) frozen += 10;
+                    if ((std::rand() % 100) < frozen) {
+                        int mpSelf = attRole.getCurrentMP();
+                        int mpTar = std::max(1, (int)tData.getCurrentMP());
+                        int addFrz = (int)std::lround(((mpSelf - (mpTar / 2)) / (double)(mpTar + 1)) * 200.0);
+                        finalTarget.setFrozen(finalTarget.getFrozen() + addFrz);
+                    }
+                    finalTarget.setFrozen(std::min(500, (int)finalTarget.getFrozen()));
+                }
+
+                if (GameManager::getInstance().CheckBattleEffect(rnum, 7)) {
+                    tData.setPhyPower(std::max(0, tData.getPhyPower() - 5));
+                }
+
+                if (GameManager::getInstance().CheckBattleEffect(rnum, 25)) {
+                    int hurtmp = hurt / 10;
+                    if (hurtmp > tData.getCurrentMP()) hurtmp = tData.getCurrentMP();
+                    tData.setCurrentMP(std::max(0, tData.getCurrentMP() - hurtmp));
+                    addmpvalue += hurtmp;
+                }
+            }
         }
-        
-        ShowHurtValue(magic.getHurtType());
+    }
+
+    ShowHurtValue(magic.getHurtType());
+
+    // 攻击者消耗
+    if (GameManager::getInstance().CheckBattleEffect(rnum, 10)) {
+        needmp = (needmp * 4) / 5;
+    }
+    if (attRole.getAttTwice() == 1) needmp = needmp / 2;
+    attRole.setCurrentMP(attRole.getCurrentMP() - needmp);
+    attRole.setCurrentHP(attRole.getCurrentHP() - (needmp * attRole.getHurt()) / 100);
+
+    if (!GameManager::getInstance().CheckBattleEffect(rnum, 1)) {
+        attRole.setPhyPower(attRole.getPhyPower() - 3);
+    }
+
+    attRole.setCurrentHP(attRole.getCurrentHP() - magic.getNeedHP() * ((level + 1) / 2));
+    if (attRole.getCurrentHP() < 0) attRole.setCurrentHP(0);
+    if (attRole.getCurrentHP() > attRole.getMaxHP()) attRole.setCurrentHP(attRole.getMaxHP());
+    if (attRole.getCurrentMP() < 0) attRole.setCurrentMP(0);
+
+    if (battleMode > 1) {
+        attRole.setAngry(std::min(100, attRole.getAngry() + 1));
+    }
+
+    if (addmpvalue > 0) {
+        attacker.setShowNumber(addmpvalue);
+        attRole.setCurrentMP(std::min((int)attRole.getMaxMP(), attRole.getCurrentMP() + addmpvalue));
+        ShowHurtValue(1); // purple MP
+    }
+    if (addhpvalue > 0) {
+        attacker.setShowNumber(addhpvalue);
+        attRole.setCurrentHP(std::min((int)attRole.getMaxHP(), attRole.getCurrentHP() + addhpvalue));
+        ShowHurtValue(3); // green heal
     }
 }
 
@@ -2854,11 +3054,11 @@ void BattleManager::SetAttackArea(int type, int ax, int ay, int range, int bx, i
                         inArea = true;
                     }
                     break;
-                case 2: // Cross / Star (Centered at Attacker)
-                    if ((i == bx && std::abs(j - by) <= step) || 
-                        (j == by && std::abs(i - bx) <= step)) {
-                        inArea = true;
-                    } else if (std::abs(i - bx) == std::abs(j - by) && std::abs(i - bx) <= range) {
+                case 2: // Cross / Star (Centered at Attacker) — Pascal SetAminationPosition mode 2
+                    if ((std::abs(i - bx) == std::abs(j - by) && std::abs(i - bx) <= range) ||
+                        (i == bx && std::abs(j - by) <= step) ||
+                        (j == by && std::abs(i - bx) <= step) ||
+                        (i == bx && j == by)) {
                         inArea = true;
                     }
                     break;
@@ -2917,39 +3117,48 @@ void BattleManager::Attack(int roleIdx, int targetIdx, int magicId) {
     BattleRole& attacker = m_battleRoles[roleIdx];
     int attackerX = attacker.getX();
     int attackerY = attacker.getY();
-    
-    // 1. Determine Level
-    int level = GetMagicLevel(attacker.getRNum(), magicId) / 100;
-    if (level < 1) level = 1;
-    if (level > 10) level = 10;
-    
+    int rnum = attacker.getRNum();
+
+    int level = GetMagicBattleLevel(rnum, magicId);
     Magic& magic = GameManager::getInstance().getMagic(magicId);
+    Role& rData = GameManager::getInstance().getRole(rnum);
+
+    int step = magic.getMoveDistance(level - 1);
+    if (CheckEquipSet(rData.getEquip(0), rData.getEquip(1), rData.getEquip(2), rData.getEquip(3)) == 1) step += 1;
+    if (GameManager::getInstance().CheckBattleEffect(rnum, 22)) step += 1;
+    if (step < 0) step = 0;
     int range = magic.getAttDistance(level - 1);
     if (range < 0) range = 0;
-    
-    // 2. Set Attack Area (Layer 4)
+
     int targetX = -1, targetY = -1;
-    if (targetIdx >= 0 && targetIdx < m_battleRoles.size()) {
+    if (targetIdx >= 0 && targetIdx < (int)m_battleRoles.size()) {
         targetX = m_battleRoles[targetIdx].getX();
         targetY = m_battleRoles[targetIdx].getY();
     } else {
-        // Use cursor if invalid target?
         targetX = m_cursorX;
         targetY = m_cursorY;
     }
-    
-    SetAttackArea(magic.getAttAreaType(), targetX, targetY, range, attackerX, attackerY, range);
-    
-    int actionMode = magic.getMagicType();
-    PlayActionAmination(roleIdx, actionMode, targetX, targetY);
+
+    // Pascal SetAminationPosition(AttAreaType, step=MoveDistance, range=AttDistance)
+    SetAttackArea(magic.getAttAreaType(), targetX, targetY, range, attackerX, attackerY, step);
+
+    SoundManager::getInstance().PlaySound(magic.getSoundNum());
+    PlayActionAmination(roleIdx, magic.getMagicType(), targetX, targetY);
     PlayMagicAmination(roleIdx, magicId, level, targetX, targetY);
-    
-    // 4. Calculate & Apply Damage
     CalHurtRole(roleIdx, magicId, level);
-    
-    // 5. Update Progress
+
+    int twice = (rData.getAttTwice() == 1) ? 2 : 1;
+    int battleMode = GameManager::getInstance().getBattleMode();
+    int needProg = ((magic.getNeedProgress() * 10 * level) + 100) * 3 - 1;
+    if (((attacker.getProgress() + 1) / 3 < needProg / twice)
+        && rData.getAngry() == 100 && battleMode > 1) {
+        int needFull = needProg;
+        rData.setAngry(100 - (((needFull - attacker.getProgress()) * 100) / std::max(1, needFull)) / twice);
+        attacker.setProgress(0);
+    } else {
+        attacker.setProgress(std::max(0, attacker.getProgress() - needProg / twice));
+    }
     attacker.setActed(1);
-    attacker.setProgress(0); // Reset progress
 }
 
 void BattleManager::AttackAt(int roleIdx, int targetX, int targetY, int magicId) {
@@ -2958,23 +3167,37 @@ void BattleManager::AttackAt(int roleIdx, int targetX, int targetY, int magicId)
     BattleRole& attacker = m_battleRoles[roleIdx];
     int attackerX = attacker.getX();
     int attackerY = attacker.getY();
-    int level = GetMagicLevel(attacker.getRNum(), magicId) / 100;
-    if (level < 1) level = 1;
-    if (level > 10) level = 10;
+    int rnum = attacker.getRNum();
+    int level = GetMagicBattleLevel(rnum, magicId);
     Magic& magic = GameManager::getInstance().getMagic(magicId);
-    int needMP = magic.getNeedMP() * level;
-    Role& rData = GameManager::getInstance().getRole(attacker.getRNum());
-    if (rData.getCurrentMP() < needMP) return;
-    rData.setCurrentMP(rData.getCurrentMP() - needMP);
+    Role& rData = GameManager::getInstance().getRole(rnum);
+
+    // MP is consumed inside CalHurtRole (Pascal AttackAction → CalHurtRole)
+    int step = magic.getMoveDistance(level - 1);
+    if (CheckEquipSet(rData.getEquip(0), rData.getEquip(1), rData.getEquip(2), rData.getEquip(3)) == 1) step += 1;
+    if (GameManager::getInstance().CheckBattleEffect(rnum, 22)) step += 1;
+    if (step < 0) step = 0;
     int range = magic.getAttDistance(level - 1);
     if (range < 0) range = 0;
-    SetAttackArea(magic.getAttAreaType(), targetX, targetY, range, attackerX, attackerY, range);
-    int actionMode = magic.getMagicType();
-    PlayActionAmination(roleIdx, actionMode, targetX, targetY);
+
+    SetAttackArea(magic.getAttAreaType(), targetX, targetY, range, attackerX, attackerY, step);
+    SoundManager::getInstance().PlaySound(magic.getSoundNum());
+    PlayActionAmination(roleIdx, magic.getMagicType(), targetX, targetY);
     PlayMagicAmination(roleIdx, magicId, level, targetX, targetY);
     CalHurtRole(roleIdx, magicId, level);
+
+    int twice = (rData.getAttTwice() == 1) ? 2 : 1;
+    int battleMode = GameManager::getInstance().getBattleMode();
+    int needProg = ((magic.getNeedProgress() * 10 * level) + 100) * 3 - 1;
+    if (((attacker.getProgress() + 1) / 3 < needProg / twice)
+        && rData.getAngry() == 100 && battleMode > 1) {
+        int needFull = needProg;
+        rData.setAngry(100 - (((needFull - attacker.getProgress()) * 100) / std::max(1, needFull)) / twice);
+        attacker.setProgress(0);
+    } else {
+        attacker.setProgress(std::max(0, attacker.getProgress() - needProg / twice));
+    }
     attacker.setActed(1);
-    attacker.setProgress(0);
 }
 
 void BattleManager::ShowBMenu(int menuStatus, int menu, int max) {
@@ -3419,14 +3642,12 @@ bool BattleManager::SelectMagicTarget(int roleIdx, int magicId, int& outX, int& 
     m_cursorY = actor.getY();
     m_showAttackRange = true;
     m_showMoveRange = true;
-    int level = GetMagicLevel(actor.getRNum(), magicId) / 100;
-    if (level < 1) level = 1;
-    if (level > 10) level = 10;
+    int level = GetMagicBattleLevel(actor.getRNum(), magicId);
     Magic& magic = GameManager::getInstance().getMagic(magicId);
     int moveRange = magic.getMoveDistance(level - 1);
     Role& rData = GameManager::getInstance().getRole(actor.getRNum());
     if (CheckEquipSet(rData.getEquip(0), rData.getEquip(1), rData.getEquip(2), rData.getEquip(3)) == 1) moveRange += 1;
-    if (GameManager::getInstance().GetEquipState(actor.getRNum(), 22) || GameManager::getInstance().GetGongtiState(actor.getRNum(), 22)) moveRange += 1;
+    if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), 22)) moveRange += 1;
     if (moveRange < 0) moveRange = 0;
     int attackRange = magic.getAttDistance(level - 1);
     if (attackRange < 0) attackRange = 0;
@@ -3444,7 +3665,8 @@ bool BattleManager::SelectMagicTarget(int roleIdx, int magicId, int& outX, int& 
         }
     }
     while (true) {
-        DrawBFieldWithCursor(magic.getAttAreaType(), attackRange, attackRange);
+        // Pascal DrawBFieldWithCursor(AttAreaType, step=MoveDistance, range=AttDistance)
+        DrawBFieldWithCursor(magic.getAttAreaType(), moveRange, attackRange);
         RenderBattle();
         UIManager::getInstance().DrawShadowTextUtf8("请选择目标", 10, 10, 0xFFFFFF, 0x000000);
         UIManager::getInstance().UpdateScreen();
@@ -4110,6 +4332,14 @@ BattleRole& BattleManager::getBattleRole(int index) {
 
 int BattleManager::getBattleRoleCount() const {
     return static_cast<int>(m_battleRoles.size());
+}
+
+int BattleManager::getMaxRound() const {
+    int mx = 0;
+    for (const auto& r : m_battleRoles) {
+        if (r.getRound() > mx) mx = r.getRound();
+    }
+    return mx;
 }
 
 int16_t BattleManager::getBattleField(int layer, int x, int y) const {

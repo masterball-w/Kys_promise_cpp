@@ -96,6 +96,9 @@ kys-promise-androidstudio/.idea/
 kys-promise-androidstudio/app/.cxx/
 kys-promise-androidstudio/app/build/
 kys-promise-androidstudio/build/
+kys-promise-androidstudio/_cmake_probe*/
+kys-promise-androidstudio/assemble-debug.log
+kys-promise-androidstudio/app/jni/.kys-ndk-abs
 kys-promise-androidstudio/app/jni/SDL2/
 kys-promise-androidstudio/app/jni/SDL2_image/
 kys-promise-androidstudio/app/jni/SDL2_ttf/
