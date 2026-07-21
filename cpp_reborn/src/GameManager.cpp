@@ -1242,54 +1242,102 @@ void GameManager::Quit() {
 void GameManager::UpdateTitleScreen() {
     if (!m_playedTitleAnim) {
         UIManager::getInstance().PlayTitleAnimation();
+        VirtualControls::clearTapLatches();
+        VirtualControls::releaseAll();
+        InputManager::getInstance().FlushEvents();
         m_playedTitleAnim = true;
     }
-    
-    
+
+    auto activateTitleSelection = [&]() {
+        if (m_titleMenuSelection == 0) {
+            m_currentState = GameState::CharacterCreation;
+            m_charCreatePhase = CharCreatePhase::NameInput;
+            m_characterCreationNameUtf8 = "金先生";
+            if (getRoleCount() > 0) {
+                getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+            }
+            SDL_StartTextInput(m_window);
+            m_characterCreationTextInputActive = true;
+            VirtualControls::clearTapLatches();
+            VirtualControls::releaseAll();
+            InputManager::getInstance().FlushEvents();
+        } else if (m_titleMenuSelection == 1) {
+            UIManager::getInstance().DrawTitleBackground();
+            DrawTitleMenu();
+            UIManager::getInstance().CaptureScreen();
+            if (UIManager::getInstance().ShowSaveLoadMenu(false)) {
+                m_cameraX = m_mainMapX;
+                m_cameraY = m_mainMapY;
+                SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
+                m_currentState = GameState::Roaming;
+            }
+        } else if (m_titleMenuSelection == 2) {
+            m_isRunning = false;
+        }
+    };
+
+    static uint32_t s_lastTitleConfirmMs = 0;
     SDL_Event e;
     while (SDL_PollEvent(&e) != 0) {
         if (e.type == SDL_EVENT_QUIT) {
             m_isRunning = false;
-        } else if (e.type == SDL_EVENT_KEY_DOWN) {
+            continue;
+        }
+        if (!VirtualControls::handleEvent(e)) continue;
+
+        if (e.type == SDL_EVENT_KEY_DOWN) {
             switch (e.key.key) {
                 case SDLK_UP:
+                case SDLK_KP_8:
                     m_titleMenuSelection--;
                     if (m_titleMenuSelection < 0) m_titleMenuSelection = 2;
                     break;
                 case SDLK_DOWN:
+                case SDLK_KP_2:
                     m_titleMenuSelection++;
                     if (m_titleMenuSelection > 2) m_titleMenuSelection = 0;
                     break;
                 case SDLK_RETURN:
                 case SDLK_SPACE:
-                    if (m_titleMenuSelection == 0) {// 新游戏
-                        m_currentState = GameState::CharacterCreation;
-                        m_charCreatePhase = CharCreatePhase::NameInput;
-                        m_characterCreationNameUtf8 = "金先生";
-                        if (getRoleCount() > 0) {
-                            getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
-                        }
-                        SDL_StartTextInput(m_window);
-                        m_characterCreationTextInputActive = true;
-                    } else if (m_titleMenuSelection == 1) {
-                        // Capture title frame so load menu overlays like Pascal MenuLoadAtBeginning
-                        UIManager::getInstance().DrawTitleBackground();
-                        DrawTitleMenu();
-                        UIManager::getInstance().CaptureScreen();
-                        if (UIManager::getInstance().ShowSaveLoadMenu(false)) {
-                            m_currentState = GameState::Roaming;
-                        }
-                    } else if (m_titleMenuSelection == 2) {
-                        m_isRunning = false;
+                case SDLK_KP_ENTER: {
+                    uint32_t now = SDL_GetTicks();
+                    if (now - s_lastTitleConfirmMs > 250) {
+                        s_lastTitleConfirmMs = now;
+                        activateTitleSelection();
                     }
                     break;
+                }
                 case SDLK_ESCAPE:
                     m_isRunning = false;
+                    break;
+                default:
                     break;
             }
         }
     }
-    
+
+    // Virtual pad only (no SDL_PushEvent — avoids duplicate with PollEvent above).
+    if (VirtualControls::consumeTap(SDL_SCANCODE_UP)) {
+        m_titleMenuSelection++;
+        if (m_titleMenuSelection > 2) m_titleMenuSelection = 0;
+    }
+    if (VirtualControls::consumeTap(SDL_SCANCODE_DOWN)) {
+        m_titleMenuSelection--;
+        if (m_titleMenuSelection < 0) m_titleMenuSelection = 2;
+    }
+    if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) || VirtualControls::consumeTap(SDL_SCANCODE_RETURN)) {
+        uint32_t now = SDL_GetTicks();
+        if (now - s_lastTitleConfirmMs > 250) {
+            s_lastTitleConfirmMs = now;
+            activateTitleSelection();
+        }
+    }
+    if (VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE)) {
+        m_isRunning = false;
+    }
+
+    SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(m_renderer);
     UIManager::getInstance().DrawTitleBackground();
     DrawTitleMenu();
     VirtualControls::present(m_renderer);
@@ -1316,6 +1364,42 @@ void GameManager::DrawTitleMenu() {
 }
 
 void GameManager::UpdateCharacterCreation() {
+    auto confirmCharCreate = [&]() {
+        if (m_charCreatePhase == CharCreatePhase::NameInput) {
+            if (m_characterCreationTextInputActive) {
+                SDL_StopTextInput(m_window);
+                m_characterCreationTextInputActive = false;
+            }
+            if (m_characterCreationNameUtf8.empty()) {
+                m_characterCreationNameUtf8 = "金先生";
+            } else if (getGameTime() == 0) {
+                std::string gbk = TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8);
+                if (gbk.size() < 2 || (uint8_t)gbk[0] != 0xBD || (uint8_t)gbk[1] != 0xF0) {
+                    m_characterCreationNameUtf8 = std::string("金") + m_characterCreationNameUtf8;
+                }
+            }
+            if (getRoleCount() > 0) {
+                getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+                RandomizeRoleStats(getRole(0));
+            }
+            m_charCreatePhase = CharCreatePhase::AttributeSelect;
+        } else {
+            if (getRoleCount() > 0) {
+                getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
+            }
+            InitNewGame();
+            m_currentState = GameState::Roaming;
+        }
+    };
+
+    static uint32_t s_lastCharCreateConfirmMs = 0;
+    auto confirmCharCreateDebounced = [&]() {
+        const uint32_t now = SDL_GetTicks();
+        if (now - s_lastCharCreateConfirmMs < 250) return;
+        s_lastCharCreateConfirmMs = now;
+        confirmCharCreate();
+    };
+
     SDL_Event e;
     while (SDL_PollEvent(&e) != 0) {
         if (e.type == SDL_EVENT_QUIT) {
@@ -1324,7 +1408,11 @@ void GameManager::UpdateCharacterCreation() {
                 SDL_StopTextInput(m_window);
                 m_characterCreationTextInputActive = false;
             }
-        } else if (e.type == SDL_EVENT_KEY_DOWN) {
+            continue;
+        }
+        if (!VirtualControls::handleEvent(e)) continue;
+
+        if (e.type == SDL_EVENT_KEY_DOWN) {
             if (m_charCreatePhase == CharCreatePhase::NameInput) {
                 if (e.key.key == SDLK_BACKSPACE) {
                     PopBackUtf8(m_characterCreationNameUtf8);
@@ -1332,26 +1420,7 @@ void GameManager::UpdateCharacterCreation() {
                         getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
                     }
                 } else if (e.key.key == SDLK_RETURN) {
-                    // Confirm name → attribute roll phase (Pascal: EnterString then RandomAttribute)
-                    if (m_characterCreationTextInputActive) {
-                        SDL_StopTextInput(m_window);
-                        m_characterCreationTextInputActive = false;
-                    }
-                    if (m_characterCreationNameUtf8.empty()) {
-                        m_characterCreationNameUtf8 = "金先生";
-                    } else if (getGameTime() == 0) {
-                        // Pascal: if gametime=0 then Name := '金' + Name
-                        std::string gbk = TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8);
-                        if (gbk.size() < 2 || (uint8_t)gbk[0] != 0xBD || (uint8_t)gbk[1] != 0xF0) {
-                            // 金 in GBK is 0xBD 0xF0
-                            m_characterCreationNameUtf8 = std::string("金") + m_characterCreationNameUtf8;
-                        }
-                    }
-                    if (getRoleCount() > 0) {
-                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
-                        RandomizeRoleStats(getRole(0));
-                    }
-                    m_charCreatePhase = CharCreatePhase::AttributeSelect;
+                    confirmCharCreateDebounced();
                 } else if (e.key.key == SDLK_ESCAPE) {
                     if (m_characterCreationTextInputActive) {
                         SDL_StopTextInput(m_window);
@@ -1362,13 +1431,8 @@ void GameManager::UpdateCharacterCreation() {
             } else { // AttributeSelect
                 // Pascal RandomAttribute: Y/Return confirm; Esc cancel; any other key re-roll
                 if (e.key.key == SDLK_Y || e.key.key == SDLK_RETURN) {
-                    if (getRoleCount() > 0) {
-                        getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
-                    }
-                    InitNewGame();
-                    m_currentState = GameState::Roaming;
-                    // Do not redraw character-creation UI over the opening scene/event.
-                    return;
+                    confirmCharCreateDebounced();
+                    if (m_currentState == GameState::Roaming) return;
                 } else if (e.key.key == SDLK_ESCAPE) {
                     m_currentState = GameState::TitleScreen;
                 } else {
@@ -1384,6 +1448,18 @@ void GameManager::UpdateCharacterCreation() {
                 if (getRoleCount() > 0) getRole(0).setName(gbk);
             }
         }
+    }
+
+    if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) || VirtualControls::consumeTap(SDL_SCANCODE_RETURN)) {
+        confirmCharCreateDebounced();
+        if (m_currentState == GameState::Roaming) return;
+    }
+    if (VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE)) {
+        if (m_characterCreationTextInputActive) {
+            SDL_StopTextInput(m_window);
+            m_characterCreationTextInputActive = false;
+        }
+        m_currentState = GameState::TitleScreen;
     }
 
     if (m_charCreatePhase == CharCreatePhase::NameInput) {
@@ -1576,6 +1652,7 @@ void GameManager::UpdateRoaming() {
     SDL_Event e;
     while (SDL_PollEvent(&e) != 0) {
         InputManager::getInstance().ProcessEvent(e);
+        VirtualControls::handleEvent(e);
         if (e.type == SDL_EVENT_QUIT) {
             m_isRunning = false;
         } else if (e.type == SDL_EVENT_KEY_DOWN) {
@@ -1635,6 +1712,16 @@ void GameManager::UpdateRoaming() {
                     CheckWorldEntrance();
                 }
             }
+        }
+    }
+
+    if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) || VirtualControls::consumeTap(SDL_SCANCODE_RETURN)) {
+        if (m_currentSceneId >= 0) {
+            int frontX = 0, frontY = 0;
+            getFacingTile(frontX, frontY);
+            EventManager::getInstance().CheckEvent(m_currentSceneId, frontX, frontY, true);
+        } else {
+            CheckWorldEntrance();
         }
     }
 

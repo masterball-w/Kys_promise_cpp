@@ -6,6 +6,10 @@
 
 #ifdef __ANDROID__
 #include <SDL3/SDL_system.h>
+#include <android/log.h>
+#define KYS_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "KYS", __VA_ARGS__)
+#else
+#define KYS_LOGI(...) ((void)0)
 #endif
 
 namespace fs = std::filesystem;
@@ -22,6 +26,29 @@ bool dirLooksLikeDataRoot(const fs::path& root) {
     if (fs::is_directory(root / "resource", ec)) return true;
     return false;
 }
+
+#ifdef __ANDROID__
+bool isSharedSdcardKysRoot(const std::string& root) {
+    return root.find("/kys_promise") != std::string::npos &&
+           root.find("/Android/data/") == std::string::npos;
+}
+
+void appendAndroidSharedKysCandidates(std::vector<fs::path>& candidates) {
+    // User-editable location on shared external storage (not app-private Android/data/...).
+    candidates.emplace_back("/sdcard/kys_promise");
+    candidates.emplace_back("/storage/emulated/0/kys_promise");
+    candidates.emplace_back("/storage/sdcard0/kys_promise");
+
+    if (const char* ext = SDL_GetAndroidExternalStoragePath()) {
+        std::string s(ext);
+        const std::string marker = "/Android";
+        const auto pos = s.find(marker);
+        if (pos != std::string::npos) {
+            candidates.emplace_back(s.substr(0, pos) + "/kys_promise");
+        }
+    }
+}
+#endif
 
 bool EventFilter(void* /*userdata*/, SDL_Event* event) {
     if (!event) return true;
@@ -42,11 +69,8 @@ std::string discoverDataRoot() {
     std::vector<fs::path> candidates;
 
 #ifdef __ANDROID__
-    if (const char* ext = SDL_GetAndroidExternalStoragePath()) {
-        candidates.emplace_back(ext);
-        candidates.emplace_back(fs::path(ext) / "kys_promise");
-        candidates.emplace_back(fs::path(ext) / "game_data");
-    }
+    appendAndroidSharedKysCandidates(candidates);
+    // App-private dirs only as last-resort fallbacks (not user-editable on newer Android).
     if (const char* internal = SDL_GetAndroidInternalStoragePath()) {
         candidates.emplace_back(internal);
         candidates.emplace_back(fs::path(internal) / "game_data");
@@ -85,18 +109,15 @@ std::string discoverDataRoot() {
             std::string s = canon.string();
             if (!s.empty() && s.back() != '/' && s.back() != '\\') s.push_back('/');
             std::cout << "[PlatformCompat] Data root: " << s << std::endl;
+            KYS_LOGI("Data root: %s", s.c_str());
             return s;
         }
     }
 
-    // Fallback: prefer Android external, else cwd
+    // Fallback: prefer shared SD-card kys_promise on Android
 #ifdef __ANDROID__
-    if (const char* ext = SDL_GetAndroidExternalStoragePath()) {
-        std::string s = ext;
-        if (!s.empty() && s.back() != '/') s.push_back('/');
-        std::cout << "[PlatformCompat] Fallback data root (Android external): " << s << std::endl;
-        return s;
-    }
+    std::cout << "[PlatformCompat] Fallback data root: /sdcard/kys_promise/" << std::endl;
+    return "/sdcard/kys_promise/";
 #endif
     std::cout << "[PlatformCompat] Fallback data root: ./" << std::endl;
     return "./";
@@ -109,14 +130,18 @@ std::string discoverSaveDir(const std::string& dataRoot) {
     if (!fs::exists(save, ec)) {
         fs::create_directories(save, ec);
     }
-    // Prefer writable save under pref path on Android if data root is read-only assets
 #ifdef __ANDROID__
+    // Shared /sdcard/kys_promise/: read/write save next to assets (user-accessible).
+    if (isSharedSdcardKysRoot(dataRoot)) {
+        std::string s = save.string();
+        if (!s.empty() && s.back() != '/' && s.back() != '\\') s.push_back('/');
+        std::cout << "[PlatformCompat] Android save dir (shared): " << s << std::endl;
+        return s;
+    }
+    // Legacy app-private fallback
     if (char* pref = SDL_GetPrefPath("kys", "promise")) {
         fs::path prefSave = fs::path(pref) / "save";
         fs::create_directories(prefSave, ec);
-        // If template ranger exists only under dataRoot, still use pref for writes
-        // but Load can fall back — GameManager keeps one m_savePath for both.
-        // Prefer dataRoot/save if it already has ranger.grp (user placed full pack).
         if (fs::exists(save / "ranger.grp", ec) || fs::exists(save / "Ranger.grp", ec)) {
             SDL_free(pref);
             std::string s = save.string();

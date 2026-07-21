@@ -18,6 +18,9 @@
 #include "VirtualControls.h"
 
 namespace {
+    // GBK bytes for 金先生
+    constexpr char kDefaultHeroNameGbk[] = "\xBD\xF0\xCF\xC8\xC9\xFA";
+
     uint16_t ReadU16LE(const std::string& s, size_t offset) {
         if (offset + 1 >= s.size()) return 0;
         return static_cast<uint16_t>(static_cast<uint8_t>(s[offset])) |
@@ -937,8 +940,8 @@ void EventManager::Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int 
     std::string heroNick = GameManager::getInstance().getRole(0).getNick();
 
     // Ensure heroName has a default if empty (keep in GBK encoding!)
-    if (heroName.empty() || LooksLikeUninitializedName(heroName)) 
-        heroName = "金先生";  // Keep as GBK, not UTF-8!
+    if (heroName.empty() || LooksLikeUninitializedName(heroName))
+        heroName = kDefaultHeroNameGbk;
     
     std::string heroSurname = ExtractSurnameBytesGbk(heroName);
     std::string heroGiven = (heroName.size() > heroSurname.size()) ? heroName.substr(heroSurname.size()) : "";
@@ -1664,7 +1667,7 @@ void EventManager::Instruct_Dialogue(int talkId, int headId, int mode) {
                 std::string heroName = GameManager::getInstance().getRole(0).getName();
                 std::string heroNick = GameManager::getInstance().getRole(0).getNick();
                 if (heroName.empty() || LooksLikeUninitializedName(heroName))
-                    heroName = "金先生";
+                    heroName = kDefaultHeroNameGbk;
 
                 size_t pos;
                 while ((pos = part.find("@0")) != std::string::npos) {
@@ -1888,10 +1891,10 @@ void EventManager::Instruct_JoinParty(int roleId) {
 }
 
 int EventManager::Instruct_AskRest(int jump1, int jump2) {
-    int w, h;
-    SDL_GetWindowSize(UIManager::getInstance().GetWindow(), &w, &h);
-    int centerX = w / 2;
-    int centerY = h / 2;
+    const int w = 640;
+    const int h = 480;
+    const int centerX = w / 2;
+    const int centerY = h / 2;
     
     uint32_t color1 = GraphicsUtils::getPaletteColor(5);
     uint32_t color2 = GraphicsUtils::getPaletteColor(7);

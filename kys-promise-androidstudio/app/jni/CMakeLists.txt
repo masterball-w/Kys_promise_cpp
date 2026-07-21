@@ -13,6 +13,11 @@ project(kys_android_jni C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Windows: SDL_image vendored deps exceed MAX_PATH under deep .cxx/_deps trees.
+if(WIN32 AND NOT FETCHCONTENT_BASE_DIR)
+    set(FETCHCONTENT_BASE_DIR "C:/cmake_fc" CACHE PATH "Short FetchContent root for Windows")
+endif()
+
 include(FetchContent)
 
 set(SDL_SHARED ON CACHE BOOL "" FORCE)

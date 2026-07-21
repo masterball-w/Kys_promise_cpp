@@ -80,6 +80,7 @@ endif()
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---- Engine sources (shared by PC + Android) ----
+# GbkCodec.cpp: built-in GBK transcoder for Android (no OS iconv).
 file(GLOB_RECURSE KYS_ENGINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB_RECURSE KYS_ENGINE_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h")
 list(FILTER KYS_ENGINE_SOURCES EXCLUDE REGEX ".*dump_header\\.cpp$")

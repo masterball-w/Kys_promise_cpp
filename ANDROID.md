@@ -72,16 +72,10 @@ cd kys-promise-androidstudio
 
 ## 游戏数据（外置，与旧 Pascal 包类似）
 
-APK **不内置**原版资源。在设备可写目录放入完整 `game_data`（或扁平的 `resource/` + `save/` + …），引擎会按顺序探测：
-
-1. `SDL_GetAndroidExternalStoragePath()` 及其下 `kys_promise/`、`game_data/`
-2. 内部存储 / PrefPath 下的 `game_data/`
-3. 回退到外部存储根目录
-
-推荐：把 PC 侧同一份 `game_data/` 拷到手机：
+APK **不内置**原版资源。请把完整资源放在 **SD 卡根目录** 的 `kys_promise/` 下（用户可直接用文件管理器编辑，无需进 `Android/data/...`）。
 
 ```text
-<外部存储>/Android/data/org.libsdl.kys_promise/files/game_data/
+/sdcard/kys_promise/          # 推荐（文件管理器里通常显示为「内部存储/kys_promise」）
   resource/
   save/
   fight/
@@ -91,13 +85,29 @@ APK **不内置**原版资源。在设备可写目录放入完整 `game_data`（
   sound/
 ```
 
-或：
+引擎探测顺序（Android）：
 
-```text
-<外部存储>/kys_promise/   # 内含 resource/、save/ …
+1. `/sdcard/kys_promise/`、`/storage/emulated/0/kys_promise/` 等共享存储路径
+2. 由应用外部目录反推的 `<SD卡根>/kys_promise/`
+3. 应用私有目录 / PrefPath（仅作兜底，**不推荐**）
+
+**不要**把资源放在 `Android/data/org.libsdl.kys_promise/files/` —— 新版 Android 对该目录的编辑权限不对普通用户开放。
+
+### 从 PC 推送资源（adb）
+
+```powershell
+# 将仓库 game_data/ 推到手机 SD 卡根目录
+powershell -ExecutionPolicy Bypass -File scripts/push_game_data_android.ps1
 ```
 
-存档：若数据根下已有 `ranger.grp`，则读写该处 `save/`；否则写入 PrefPath 下的 `save/`。
+或手动：
+
+```powershell
+adb shell mkdir -p /sdcard/kys_promise
+adb push game_data/. /sdcard/kys_promise/
+```
+
+安装后首次启动会提示授予 **「所有文件访问」** 权限（Android 11+），用于读取 `/sdcard/kys_promise/`。授权后返回应用即可。
 
 ## 音乐
 

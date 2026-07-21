@@ -27,6 +27,18 @@
 
 namespace {
     std::string g_loadedFontPath;
+    constexpr float kLogicalW = 640.f;
+    constexpr float kLogicalH = 480.f;
+
+    SDL_FRect logicalFullscreenRect() {
+        return {0.f, 0.f, kLogicalW, kLogicalH};
+    }
+
+    void getLogicalDimensions(int& w, int& h) {
+        w = static_cast<int>(kLogicalW);
+        h = static_cast<int>(kLogicalH);
+    }
+
     bool IsAsciiOnly(const std::string& text) {
         for (unsigned char c : text) {
             if (c >= 0x80) return false;
@@ -439,6 +451,7 @@ void UIManager::DrawShadowTextUtf8(const std::string& text, int x, int y, uint32
     SDL_Surface* surf2 = TTF_RenderText_Blended(useFont, displayText.c_str(), 0, c2);
     if (surf2) {
         SDL_Texture* tex2 = SDL_CreateTextureFromSurface(m_renderer, surf2);
+        SDL_SetTextureBlendMode(tex2, SDL_BLENDMODE_BLEND);
         SDL_FRect dst2 = { (float)(x + 1), (float)y, (float)surf2->w, (float)surf2->h };
         SDL_RenderTexture(m_renderer, tex2, NULL, &dst2);
         SDL_DestroyTexture(tex2);
@@ -448,6 +461,7 @@ void UIManager::DrawShadowTextUtf8(const std::string& text, int x, int y, uint32
     SDL_Surface* surf1 = TTF_RenderText_Blended(useFont, displayText.c_str(), 0, c1);
     if (surf1) {
         SDL_Texture* tex1 = SDL_CreateTextureFromSurface(m_renderer, surf1);
+        SDL_SetTextureBlendMode(tex1, SDL_BLENDMODE_BLEND);
         SDL_FRect dst1 = { (float)x, (float)y, (float)surf1->w, (float)surf1->h };
         SDL_RenderTexture(m_renderer, tex1, NULL, &dst1);
         SDL_DestroyTexture(tex1);
@@ -461,6 +475,7 @@ void UIManager::DrawHead(int headId, int x, int y, int green, int red, int gray)
     PicImage pic = PicLoader::loadPic("resource/Heads.Pic", headId);
     if (pic.surface) {
          SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, pic.surface);
+         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
          // Apply offset like Pascal: x1 := px - Head_Pic[num].x + 1; y1 := py - Head_Pic[num].y + 1;
          float drawX = (float)(x - pic.x + 1);
          float drawY = (float)(y - pic.y + 1);
@@ -1847,9 +1862,6 @@ int UIManager::SelectItemUser(int menuSelection, int selectedIndex, int itemId, 
         int x = 338;
         int y = 58;
         int textOffsetX = 8;
-        int winW = 0;
-        int winH = 0;
-        SDL_GetWindowSize(m_window, &winW, &winH);
         DrawRectangle(x - 8, y - 18, 300, (max + 1) * 22 + 26, 0x000000CC, 0xFFFFFFFF, 200);
         std::string title = " ——選擇隊友——";
         DrawShadowTextUtf8(title, 337 + textOffsetX, 36, 0x21FFFFFF, 0x23FFFFFF);
@@ -2985,12 +2997,21 @@ void UIManager::PlayBeginningMovie(int beginNum, int endNum) {
                 skip = true;
                 break;
             }
-            if (event.type == SDL_EVENT_KEY_UP) {
-                if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
+            VirtualControls::handleEvent(event);
+            if (event.type == SDL_EVENT_KEY_DOWN) {
+                if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_RETURN ||
+                    event.key.key == SDLK_SPACE || event.key.key == SDLK_KP_ENTER) {
                     skip = true;
                     break;
                 }
             }
+        }
+        if (skip) return;
+        if (VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE) ||
+            VirtualControls::consumeTap(SDL_SCANCODE_SPACE) ||
+            VirtualControls::consumeTap(SDL_SCANCODE_RETURN)) {
+            skip = true;
+            return;
         }
         if (skip) return;
         PicImage pic = PicLoader::loadPic("resource/Begin.Pic", i);
@@ -2998,7 +3019,7 @@ void UIManager::PlayBeginningMovie(int beginNum, int endNum) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, pic.surface);
             if (tex) {
                 SDL_RenderClear(m_renderer);
-                SDL_FRect dest = { 0.0f, 0.0f, 640.0f, 480.0f };
+                SDL_FRect dest = logicalFullscreenRect();
                 SDL_RenderTexture(m_renderer, tex, NULL, &dest);
                 VirtualControls::present(m_renderer);
                 SDL_DestroyTexture(tex);
@@ -3013,6 +3034,10 @@ void UIManager::PlayBeginningMovie(int beginNum, int endNum) {
     } else {
         for (int i = beginNum; i >= endNum && !skip; --i) playFrame(i);
     }
+
+    VirtualControls::clearTapLatches();
+    VirtualControls::releaseAll();
+    InputManager::getInstance().FlushEvents();
 }
 
 void UIManager::DrawCharacterCreationNamePrompt(const std::string& nameUtf8) {
@@ -3040,20 +3065,15 @@ void UIManager::DrawTitleScreen() {
 
 void UIManager::DrawTitleBackground() {
     if (m_texBeginBackground) {
-        int w, h;
-        SDL_GetWindowSize(m_window, &w, &h);
-        SDL_FRect dest = { 0.0f, 0.0f, (float)w, (float)h };
+        SDL_FRect dest = logicalFullscreenRect();
         SDL_RenderTexture(m_renderer, m_texBeginBackground, NULL, &dest);
     }
 }
 void UIManager::DrawCenteredTexture(SDL_Texture* tex) {
     if (!tex) return;
-    int w, h;
-    SDL_GetWindowSize(m_window, &w, &h);
     float tw, th;
     SDL_GetTextureSize(tex, &tw, &th);
-    
-    SDL_FRect dest = { (float)(w - tw) / 2, (float)(h - th) / 2, tw, th };
+    SDL_FRect dest = { (kLogicalW - tw) * 0.5f, (kLogicalH - th) * 0.5f, tw, th };
     SDL_RenderTexture(m_renderer, tex, NULL, &dest);
 }
 
@@ -3114,6 +3134,7 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
     int currentSelection = 0;
     SDL_Event event;
     bool loaded = false;
+    uint32_t lastConfirmMs = 0;
 
     const char* loadSlots[] = {
         " 載入進度一", " 載入進度二", " 載入進度三",
@@ -3126,17 +3147,40 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
     const int slotCount = isSave ? 5 : 6;
     const int maxIndex = slotCount - 1;
 
-    const int menuX = isSave ? 133 : 265;
+    const int menuX = isSave ? 133 : 240;
     const int menuY = isSave ? 30 : 280;
-    const int menuW = isSave ? 67 : 107;
+    const int menuW = isSave ? 80 : 150;
     const int menuH = maxIndex * 22 + 28;
+    const int textX = menuX + 6;
+
+    auto confirmSelection = [&]() {
+        const uint32_t now = SDL_GetTicks();
+        if (now - lastConfirmMs < 250) return;
+        lastConfirmMs = now;
+        if (isSave) {
+            GameManager::getInstance().SaveGame(currentSelection + 1);
+            ShowDialogue("進度已保存", 0, 0);
+            running = false;
+        } else {
+            int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
+            loaded = GameManager::getInstance().LoadGame(slot);
+            if (loaded) {
+                running = false;
+            } else {
+                ShowDialogue("讀取失敗", 0, 0);
+            }
+        }
+    };
 
     while (running) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 GameManager::getInstance().Quit();
+                VirtualControls::clearTapLatches();
+                VirtualControls::releaseAll();
                 return false;
             }
+            VirtualControls::handleEvent(event);
             if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.key == SDLK_ESCAPE) {
                     running = false;
@@ -3145,58 +3189,23 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
                 } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
                     currentSelection = (currentSelection + slotCount - 1) % slotCount;
                 } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
-                    if (isSave) {
-                        GameManager::getInstance().SaveGame(currentSelection + 1);
-                        ShowDialogue("進度已保存", 0, 0);
-                        running = false;
-                    } else {
-                        int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
-                        loaded = GameManager::getInstance().LoadGame(slot);
-                        if (loaded) {
-                            running = false;
-                        } else {
-                            ShowDialogue("讀取失敗", 0, 0);
-                        }
-                    }
-                }
-            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                float mx = 0, my = 0;
-                SDL_GetMouseState(&mx, &my);
-                if (event.button.button == SDL_BUTTON_RIGHT) {
-                    running = false;
-                } else if (event.button.button == SDL_BUTTON_LEFT) {
-                    if (mx >= menuX && mx < menuX + menuW &&
-                        my > menuY && my < menuY + menuH + 1) {
-                        int row = static_cast<int>((my - menuY - 2) / 22);
-                        if (row < 0) row = 0;
-                        if (row > maxIndex) row = maxIndex;
-                        currentSelection = row;
-                        if (isSave) {
-                            GameManager::getInstance().SaveGame(currentSelection + 1);
-                            ShowDialogue("進度已保存", 0, 0);
-                            running = false;
-                        } else {
-                            int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
-                            loaded = GameManager::getInstance().LoadGame(slot);
-                            if (loaded) {
-                                running = false;
-                            } else {
-                                ShowDialogue("讀取失敗", 0, 0);
-                            }
-                        }
-                    }
-                }
-            } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                float mx = 0, my = 0;
-                SDL_GetMouseState(&mx, &my);
-                if (mx >= menuX && mx < menuX + menuW &&
-                    my > menuY && my < menuY + menuH + 1) {
-                    int row = static_cast<int>((my - menuY - 2) / 22);
-                    if (row < 0) row = 0;
-                    if (row > maxIndex) row = maxIndex;
-                    currentSelection = row;
+                    confirmSelection();
                 }
             }
+        }
+
+        if (VirtualControls::consumeTap(SDL_SCANCODE_UP)) {
+            currentSelection = (currentSelection + slotCount - 1) % slotCount;
+        }
+        if (VirtualControls::consumeTap(SDL_SCANCODE_DOWN)) {
+            currentSelection = (currentSelection + 1) % slotCount;
+        }
+        if (VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE)) {
+            running = false;
+        }
+        if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) ||
+            VirtualControls::consumeTap(SDL_SCANCODE_RETURN)) {
+            confirmSelection();
         }
 
         SDL_RenderClear(m_renderer);
@@ -3207,18 +3216,20 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
             SDL_RenderClear(m_renderer);
         }
 
-        // Pascal ShowCommonMenu: DrawRectangle(x, y, w, max*22+28, 0, colcolor(255), 30)
         DrawRectangle(menuX, menuY, menuW, menuH, 0, 0xFFFFFFFF, 30);
         for (int i = 0; i < slotCount; ++i) {
             uint32_t color = (i == currentSelection) ? 0x64FFFFFF : 0x05FFFFFF;
             uint32_t shadow = (i == currentSelection) ? 0x66FFFFFF : 0x07FFFFFF;
-            // Pascal: drawshadowtext(..., x - 17, y + 2 + 22 * i, ...)
-            DrawShadowTextUtf8(slots[i], menuX - 17, menuY + 2 + 22 * i, color, shadow);
+            DrawShadowTextUtf8(slots[i], textX, menuY + 2 + 22 * i, color, shadow);
         }
 
         VirtualControls::present(m_renderer);
         SDL_Delay(16);
     }
+
+    VirtualControls::clearTapLatches();
+    VirtualControls::releaseAll();
+    InputManager::getInstance().FlushEvents();
     return loaded;
 }
 
@@ -3473,8 +3484,8 @@ void UIManager::ShowDialogue(const std::string& text, int headId, int mode, cons
     }
 
     while (true) {
-        int w, h;
-        SDL_GetWindowSize(m_window, &w, &h);
+        int w = 0, h = 0;
+        getLogicalDimensions(w, h);
 
         int boxH = 150;
         int boxY = h - boxH - 20;
@@ -3511,11 +3522,17 @@ void UIManager::ShowDialogue(const std::string& text, int headId, int mode, cons
                         waiting = false;
                     }
                 }
+                VirtualControls::handleEvent(event);
                 if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                     if (SDL_GetTicks() - openTime >= debounceMs) {
                         waiting = false;
                     }
                 }
+            }
+            if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) ||
+                VirtualControls::consumeTap(SDL_SCANCODE_RETURN) ||
+                VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE)) {
+                if (SDL_GetTicks() - openTime >= debounceMs) waiting = false;
             }
 
             SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
@@ -3916,8 +3933,8 @@ int UIManager::ShowChoice(const std::string& text) {
 
         GameManager::getInstance().RenderScreenTo(m_renderer);
         
-        int w, h;
-        SDL_GetWindowSize(m_window, &w, &h);
+        int w = 0, h = 0;
+        getLogicalDimensions(w, h);
         
         uint32_t bgColor = 0xFFFFFFFF;
         uint32_t selectedColor = 0xFFFFFF00;
@@ -3971,7 +3988,7 @@ int UIManager::WaitForKeyPress() {
 void UIManager::WaitAnyKey(int* keycode, int* x, int* y) {
     SDL_Event event;
     while (true) {
-        if (SDL_WaitEvent(&event)) {
+        while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 GameManager::getInstance().Quit();
                 if (keycode) *keycode = 0;
@@ -3979,6 +3996,7 @@ void UIManager::WaitAnyKey(int* keycode, int* x, int* y) {
                 if (y) *y = 0;
                 return;
             }
+            VirtualControls::handleEvent(event);
             if (event.type == SDL_EVENT_KEY_UP) {
                 if (keycode) *keycode = event.key.key;
                 if (x) *x = 0;
@@ -3992,6 +4010,15 @@ void UIManager::WaitAnyKey(int* keycode, int* x, int* y) {
                 return;
             }
         }
+        if (VirtualControls::consumeTap(SDL_SCANCODE_SPACE) ||
+            VirtualControls::consumeTap(SDL_SCANCODE_RETURN) ||
+            VirtualControls::consumeTap(SDL_SCANCODE_ESCAPE)) {
+            if (keycode) *keycode = SDLK_SPACE;
+            if (x) *x = 0;
+            if (y) *y = 0;
+            return;
+        }
+        SDL_Delay(16);
     }
 }
 
@@ -4034,8 +4061,8 @@ void UIManager::ShowItemNotification(int itemId, int amount) {
             }
         }
 
-        int w, h;
-        SDL_GetWindowSize(m_window, &w, &h);
+        int w = 0, h = 0;
+        getLogicalDimensions(w, h);
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
         SDL_RenderClear(m_renderer);
         if (frozenBackground) {
@@ -4071,11 +4098,9 @@ void UIManager::ShowItemNotification(int itemId, int amount) {
 void UIManager::FadeScreen(bool fadeIn) {
     // fadeIn: Black -> Transparent
     // !fadeIn: Transparent -> Black
-    
-    int w, h;
-    SDL_GetWindowSize(m_window, &w, &h);
-    
+
     int steps = 20;
+    SDL_FRect full = logicalFullscreenRect();
     for (int i = 0; i <= steps; ++i) {
         int alpha = fadeIn ? (255 - i * 255 / steps) : (i * 255 / steps);
         
@@ -4083,8 +4108,7 @@ void UIManager::FadeScreen(bool fadeIn) {
         
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, alpha);
-        SDL_FRect rect = { 0.0f, 0.0f, (float)w, (float)h };
-        SDL_RenderFillRect(m_renderer, &rect);
+        SDL_RenderFillRect(m_renderer, &full);
         
         VirtualControls::present(m_renderer);
         SDL_Delay(20);
@@ -4092,16 +4116,14 @@ void UIManager::FadeScreen(bool fadeIn) {
 }
 
 void UIManager::FlashScreen(uint32_t color, int durationMs) {
-    int w, h;
-    SDL_GetWindowSize(m_window, &w, &h);
-    
+    SDL_FRect full = logicalFullscreenRect();
+
     // Draw colored rect
     GameManager::getInstance().RenderScreenTo(m_renderer);
     
     SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(m_renderer, (color >> 24) & 0xFF, (color >> 16) & 0xFF, (color >> 8) & 0xFF, 128);
-    SDL_FRect rect = { 0.0f, 0.0f, (float)w, (float)h };
-    SDL_RenderFillRect(m_renderer, &rect);
+    SDL_RenderFillRect(m_renderer, &full);
     
     VirtualControls::present(m_renderer);
     SDL_Delay(durationMs);

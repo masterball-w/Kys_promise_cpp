@@ -22,11 +22,10 @@ import android.hardware.Sensor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
+import android.os.LocaleList;
 import android.os.Message;
 import android.os.ParcelFileDescriptor;
-import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.SparseArray;
@@ -61,8 +60,8 @@ import java.util.Locale;
 public class SDLActivity extends Activity implements View.OnSystemUiVisibilityChangeListener {
     private static final String TAG = "SDL";
     private static final int SDL_MAJOR_VERSION = 3;
-    private static final int SDL_MINOR_VERSION = 3;
-    private static final int SDL_MICRO_VERSION = 0;
+    private static final int SDL_MINOR_VERSION = 2;
+    private static final int SDL_MICRO_VERSION = 20;
 /*
     // Display InputType.SOURCE/CLASS of events and devices
     //
@@ -285,7 +284,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      * It can be overridden by derived classes.
      */
     protected String getMainFunction() {
-        return "Run";
+        return "SDL_main";
     }
 
     /**
@@ -353,6 +352,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         Log.v(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
 
+
         /* Control activity re-creation */
         if (mSDLMainFinished || mActivityCreated) {
               boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
@@ -374,6 +374,12 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             Thread.currentThread().setName("SDLActivity");
         } catch (Exception e) {
             Log.v(TAG, "modify thread properties failed " + e.toString());
+        }
+
+        // KYS: /sdcard/kys_promise requires MANAGE_EXTERNAL_STORAGE on Android 11+.
+        if (!KysStoragePermission.ensure(this)) {
+            mSingleton = this;
+            return;
         }
 
         // Load shared libraries
@@ -485,10 +491,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             break;
         }
 
-        //requestWindowFeature(Window.FEATURE_NO_TITLE);
         setContentView(mLayout);
 
-        setWindowStyle(true);
+        setWindowStyle(false);
 
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
 
@@ -499,24 +504,6 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             if (filename != null) {
                 Log.v(TAG, "Got filename: " + filename);
                 SDLActivity.onNativeDropFile(filename);
-            }
-        }
-        requestPermission();
-    }
-
-    private void requestPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                // 请求 MANAGE_EXTERNAL_STORAGE 权限
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, 1024);
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // 对于 Android 6.0 到 Android 10（API 29），继续使用读取和写入外部存储权限
-            if (!(checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
-                    checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED)) {
-                requestPermissions(new String[]{android.Manifest.permission.READ_EXTERNAL_STORAGE, android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1024);
             }
         }
     }
@@ -560,6 +547,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onResume() {
         Log.v(TAG, "onResume()");
+        KysStoragePermission.onResume(this);
         super.onResume();
 
         if (mHIDDeviceManager != null) {
@@ -1976,6 +1964,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (KysStoragePermission.onRequestPermissionsResult(this, requestCode, grantResults)) {
+            return;
+        }
         boolean result = (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED);
         nativePermissionResult(requestCode, result);
     }
@@ -2134,6 +2125,44 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     static class SDLFileDialogState {
         int requestCode;
         boolean multipleChoice;
+    }
+    
+    /**
+     * This method is called by SDL using JNI.
+     */
+    public static String getPreferredLocales() {
+        String result = "";
+        if (Build.VERSION.SDK_INT >= 24 /* Android 7 (N) */) {
+            LocaleList locales = LocaleList.getAdjustedDefault();
+            for (int i = 0; i < locales.size(); i++) {
+                if (i != 0) result += ",";
+                result += formatLocale(locales.get(i));
+            }
+        } else if (mCurrentLocale != null) {
+            result = formatLocale(mCurrentLocale);
+        }
+        return result;
+    }
+
+    public static String formatLocale(Locale locale) {
+        String result = "";
+        String lang = "";
+        if (locale.getLanguage() == "in") {
+            // Indonesian is "id" according to ISO 639.2, but on Android is "in" because of Java backwards compatibility
+            lang = "id";
+        } else if (locale.getLanguage() == "") {
+            // Make sure language is never empty
+            lang = "und";
+        } else {
+            lang = locale.getLanguage();
+        }
+
+        if (locale.getCountry() == "") {
+            result = lang;
+        } else {
+            result = lang + "_" + locale.getCountry();
+        }
+        return result;
     }
 }
 

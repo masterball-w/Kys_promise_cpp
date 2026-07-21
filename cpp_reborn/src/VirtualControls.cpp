@@ -22,6 +22,7 @@ bool g_inited = false;
 SDL_Renderer* g_renderer = nullptr;
 std::array<bool, static_cast<int>(PadId::Count)> g_held{};
 std::array<Sint64, static_cast<int>(PadId::Count)> g_owner{};
+std::array<bool, static_cast<int>(PadId::Count)> g_tapLatch{};
 
 constexpr Sint64 kMouseOwner = -100;
 
@@ -83,36 +84,12 @@ SDL_Scancode scancodeOf(PadId id) {
     }
 }
 
-SDL_Keycode keycodeOf(PadId id) {
-    switch (id) {
-        case PadId::Up:      return SDLK_UP;
-        case PadId::Down:    return SDLK_DOWN;
-        case PadId::Left:    return SDLK_LEFT;
-        case PadId::Right:   return SDLK_RIGHT;
-        case PadId::Esc:     return SDLK_ESCAPE;
-        case PadId::Confirm: return SDLK_SPACE;
-        default:             return SDLK_UNKNOWN;
-    }
-}
-
-void pushKey(PadId id, bool down) {
-    SDL_Event e{};
-    e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-    e.key.scancode = scancodeOf(id);
-    e.key.key = keycodeOf(id);
-    e.key.down = down;
-    e.key.repeat = false;
-    e.key.mod = SDL_KMOD_NONE;
-    SDL_PushEvent(&e);
-}
-
 void release(PadId id) {
     const int i = static_cast<int>(id);
     if (id == PadId::Count) return;
     if (!g_held[i]) return;
     g_held[i] = false;
     g_owner[i] = -1;
-    pushKey(id, false);
 }
 
 void press(PadId id, Sint64 owner) {
@@ -124,7 +101,7 @@ void press(PadId id, Sint64 owner) {
     }
     g_held[i] = true;
     g_owner[i] = owner;
-    pushKey(id, true);
+    g_tapLatch[i] = true;
 }
 
 void releaseOwner(Sint64 owner) {
@@ -176,11 +153,14 @@ bool convertXY(float inX, float inY, float& outX, float& outY) {
 }
 
 bool fingerToLogical(const SDL_Event& e, float& lx, float& ly) {
-    SDL_Window* w = SDL_GetWindowFromID(e.tfinger.windowID);
     int ww = kLogicalW, wh = kLogicalH;
+    SDL_Window* w = SDL_GetWindowFromID(e.tfinger.windowID);
     if (w) SDL_GetWindowSize(w, &ww, &wh);
-    float wx = e.tfinger.x * static_cast<float>(ww);
-    float wy = e.tfinger.y * static_cast<float>(wh);
+    const float wx = e.tfinger.x * static_cast<float>(ww);
+    const float wy = e.tfinger.y * static_cast<float>(wh);
+    if (g_renderer && SDL_RenderCoordinatesFromWindow(g_renderer, wx, wy, &lx, &ly)) {
+        return true;
+    }
     return convertXY(wx, wy, lx, ly);
 }
 
@@ -286,6 +266,33 @@ bool isScancodeDown(SDL_Scancode sc) {
         if (g_held[i] && scancodeOf(static_cast<PadId>(i)) == sc) return true;
     }
     return false;
+}
+
+bool consumeTap(SDL_Scancode sc) {
+    if (!isEnabled()) return false;
+    const int confirm = static_cast<int>(PadId::Confirm);
+    if ((sc == SDL_SCANCODE_SPACE || sc == SDL_SCANCODE_RETURN) && g_tapLatch[confirm]) {
+        g_tapLatch[confirm] = false;
+        return true;
+    }
+    for (int i = 0; i < static_cast<int>(PadId::Count); ++i) {
+        if (g_tapLatch[i] && scancodeOf(static_cast<PadId>(i)) == sc) {
+            g_tapLatch[i] = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+void clearTapLatches() {
+    g_tapLatch.fill(false);
+}
+
+void releaseAll() {
+    for (int i = 0; i < static_cast<int>(PadId::Count); ++i) {
+        g_held[i] = false;
+        g_owner[i] = -1;
+    }
 }
 
 bool handleEvent(SDL_Event& e) {

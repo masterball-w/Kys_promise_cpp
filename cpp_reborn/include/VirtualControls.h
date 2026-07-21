@@ -15,12 +15,21 @@ bool isEnabled();
 
 /**
  * Handle pointer/finger events. Returns false if consumed (do not pass to game UI).
- * Synthesizes KEY_DOWN/KEY_UP for arrows and Escape; tracks hold for continuous move.
+ * Tracks held state for movement; discrete taps via consumeTap() (no SDL_PushEvent).
  */
 bool handleEvent(SDL_Event& e);
 
 /** Virtual key held (merge with SDL_GetKeyboardState for continuous move). */
 bool isScancodeDown(SDL_Scancode sc);
+
+/** One-shot tap from virtual pad (survives quick taps between frames). */
+bool consumeTap(SDL_Scancode sc);
+
+/** Clear pending tap latches (call after scene transitions / FlushEvents). */
+void clearTapLatches();
+
+/** Release all held virtual keys without synthesizing keyboard events. */
+void releaseAll();
 
 /** Draw overlay in logical 640×480 space. */
 void draw(SDL_Renderer* renderer);

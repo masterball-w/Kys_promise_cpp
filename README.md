@@ -195,6 +195,23 @@ cd build/Debug
 
 请确认上述资源目录已就位，且 DLL 与 exe 同目录。
 
+### Android
+
+资源放在 **SD 卡根目录** `kys_promise/`（不要用 `Android/data/...`）：
+
+```text
+/sdcard/kys_promise/
+  resource/  save/  fight/  eft/  list/  music/  sound/
+```
+
+从 PC 推送：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/push_game_data_android.ps1
+```
+
+详见 [ANDROID.md](ANDROID.md)。
+
 ---
 
 ## 开发说明
