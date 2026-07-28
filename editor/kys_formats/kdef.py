@@ -19,6 +19,8 @@ OPCODE_ARGC: Dict[int, int] = {
     50: 7, 51: 0, 52: 0, 53: 0, 54: 0, 55: 4, 56: 1, 57: 0, 58: 0, 59: 0,
     60: 5, 61: 2, 62: 0, 63: 2, 64: 0, 65: 0, 66: 1, 67: 1, 68: 7, 69: 3,
     70: 2, 71: 3,
+    # Mods / extended engines (天龙等): appears after GameFail before Break on battle win paths
+    83: 0,
 }
 
 OPCODE_NAMES: Dict[int, str] = {
@@ -91,6 +93,7 @@ OPCODE_NAMES: Dict[int, str] = {
     69: "ReSetName",
     70: "ShowTitle",
     71: "JmpScene",
+    83: "Nop83",
 }
 
 
@@ -129,8 +132,11 @@ class Script:
                 break
             argc = OPCODE_ARGC.get(op)
             if argc is None:
+                # Unknown opcode: keep going as 0-arg so the rest of the script
+                # remains visible (old behavior stopped the whole listing here).
                 out.append(Instruction(op, [], pc))
-                break
+                pc += 1
+                continue
             args = words[pc + 1 : pc + 1 + argc]
             if len(args) < argc:
                 args = args + [0] * (argc - len(args))

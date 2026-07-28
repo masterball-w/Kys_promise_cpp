@@ -687,8 +687,17 @@ void GameManager::SaveGame(int slot) {
 
     grpFile.close();
 
-    std::string sFilename = (slot == 0) ? "allsin.grp" : "S" + std::to_string(slot) + ".grp";
-    std::string dFilename = (slot == 0) ? "alldef.grp" : "D" + std::to_string(slot) + ".grp";
+    // Slot 0 files (allsin/alldef) are the NEW-GAME templates.
+    // Writing post-script D/S back onto them permanently breaks opening scenes
+    // (e.g. event0 8284→0, Kong Pili moved from bedroom to hall). Softstar
+    // allowed this; we keep templates pristine and only write S/D for slots 1+.
+    if (slot == 0) {
+        std::cout << "Game Saved to Slot 0 (ranger only; alldef/allsin templates preserved)" << std::endl;
+        return;
+    }
+
+    std::string sFilename = "S" + std::to_string(slot) + ".grp";
+    std::string dFilename = "D" + std::to_string(slot) + ".grp";
     
     SceneManager::getInstance().SaveMapData(m_savePath + sFilename);
     SceneManager::getInstance().SaveEventData(m_savePath + dFilename);
@@ -1135,6 +1144,27 @@ void GameManager::InitNewGame() {
     SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
     setMainMapPosition(m_mainMapX, m_mainMapY);
 
+    // Pascal new game: load template S/D then WalkInScene → InitialScene.
+    // loadData() only reloads ranger.grp; without refreshing allsin/alldef the
+    // in-memory event layer can be empty/stale (e.g. after a previous run's ModEvent).
+    {
+        const std::string defPath = loadPath + "alldef.grp";
+        const std::string sinPath = loadPath + "allsin.grp";
+        bool defOk = SceneManager::getInstance().LoadEventData(defPath);
+        if (!defOk) {
+            defOk = SceneManager::getInstance().LoadEventData(loadPath + "Alldef.grp");
+        }
+        bool sinOk = SceneManager::getInstance().LoadMapData(sinPath);
+        if (!sinOk) {
+            sinOk = SceneManager::getInstance().LoadMapData(loadPath + "Allsin.grp");
+        }
+        std::cout << "[InitNewGame] Reload template alldef=" << (defOk ? "ok" : "FAIL")
+                  << " allsin=" << (sinOk ? "ok" : "FAIL") << std::endl;
+    }
+
+    // Pascal WalkInScene: InitialScene before first DrawScene / CallEvent(101)
+    SceneManager::getInstance().InitialScene();
+
     Scene* cur = SceneManager::getInstance().GetScene(m_currentSceneId);
     if (cur) {
         SoundManager::getInstance().StopMusic();
@@ -1146,7 +1176,7 @@ void GameManager::InitNewGame() {
 
     // WalkInScene(Open=1): DrawScene → CallEvent(BEGIN_EVENT=101) → ShowSceneName → CheckEvent3
     if (m_screenSurface) {
-        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
     }
     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
     if (m_screenSurface) RenderScreenTo(m_renderer);
@@ -1154,12 +1184,14 @@ void GameManager::InitNewGame() {
 
     InputManager::getInstance().FlushEvents();
     std::cout << "[InitNewGame] Triggering Opening Event 101..." << std::endl;
-    EventManager::getInstance().SetExecutionContext(m_currentSceneId, 101);
+    // Pascal CurEvent := BEGIN_EVENT only for DrawScene camera/role rules.
+    // Opcode 3's eventId=-2 must NOT resolve to script id 101 (not a DData slot).
+    EventManager::getInstance().SetExecutionContext(m_currentSceneId, -1);
     EventManager::getInstance().ExecuteEvent(101);
     EventManager::getInstance().SetExecutionContext(m_currentSceneId, -1);
 
     if (m_screenSurface) {
-        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
     }
     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
     if (m_screenSurface) RenderScreenTo(m_renderer);
@@ -2010,6 +2042,10 @@ void GameManager::setMainMapPosition(int x, int y) {
 void GameManager::enterScene(int sceneId) {
     m_currentSceneId = sceneId;
     SceneManager::getInstance().SetCurrentScene(sceneId);
+    if (sceneId >= 0) {
+        // Pascal: entering a sub-scene rebuilds SceneImg via InitialScene
+        SceneManager::getInstance().InitialScene();
+    }
 }
 
 void GameManager::AddItem(int itemId, int amount) {

@@ -1,10 +1,11 @@
 # KYS-Promise 重构项目待办事项清单 (TODO List)
 
-**Last Updated:** 2026-07-21  
+**Last Updated:** 2026-07-28  
 **完整勾选进度:** [doc/PROGRESS.md](doc/PROGRESS.md)  
 **状态摘要:** [PROJECT_STATUS.md](PROJECT_STATUS.md)  
 **Android 双端:** [../ANDROID.md](../ANDROID.md)  
-**制作器:** [../editor/README.md](../editor/README.md)
+**制作器:** [../editor/README.md](../editor/README.md)  
+**开场/脚本101回归:** [doc/REGRESSION_SCRIPT_101.md](doc/REGRESSION_SCRIPT_101.md)
 
 > **核心原则**
 > 1. **二进制兼容**: `GameObject` 子类与 DOS `.grp` 布局一致。
@@ -13,14 +14,26 @@
 >
 > **当前阶段（Alpha ~0.7）**  
 > 核心循环、商店、小游戏主路径、功体状态 26–28、解耦制作器、Android 双端脚手架 + 虚拟按键已落地。  
-> P0 战斗保真主路径、P1 `instruct_50e` 已落地；**P2 真机编包**需在无公司 TSD 干扰的干净环境验证（见 §5 / ANDROID.md）。  
-> **下一优先**：新环境 `assembleDebug` → 外置 `game_data` 真机可玩 → UI/小游戏补齐。
+> **2026-07-28**：开场卧室模板已从稳定版恢复；`SaveGame(0)` 不再覆盖 `alldef`/`allsin`。  
+> **下一优先**：开场 101 目视签字 → 新环境 `assembleDebug` → 外置 `game_data` 真机可玩 → UI/小游戏补齐。
 
 ---
 
-## 0. 近期已交付（2026-07-20 ~ 07-21）— 勿再当作 TODO
+## 0. 近期已交付
 
-### 引擎 / 玩法
+### 0.1 2026-07-28 — 开场事件层 / 模板保护
+- [x] 对照稳定版 `前传64位-sdl3`：确认权威 `alldef`/`allsin`（事件0=`8284`，事件1=`8268@(40,37)`）
+- [x] 用稳定版覆盖仓库损坏模板；损坏文件保留 `*.corrupt_*.bak`
+- [x] 证实制作器 roundtrip 无损（非 editor 写坏）
+- [x] `SaveGame(0)` 禁止写回 `alldef`/`allsin`（只写 ranger）
+- [x] `InitNewGame` 强制重载模板 + `InitialScene`（保留层3 / `DData[5]:=DData[7]`）
+- [x] `DrawRLE8` 热点对齐 Pascal（`xs/ys+1`）
+- [x] 制作器单测 `test_alldef_scene0_opening_pics`；文档 `REGRESSION_SCRIPT_101.md` / `REF_DEV_DOC` §2.4
+- [ ] **待用户目视**：新游戏卧室 8284 + 孔霹雳 → 8282 坐起全流程
+
+### 0.2 2026-07-20 ~ 07-21 — 勿再当作 TODO
+
+#### 引擎 / 玩法
 - [x] 事件 Stub/Missing 大部（含 `15`/`17`/`33`–`35`/`37`/`41`/`42`/`45`–`49`/`51`–`56`/`58`–`60`/`63`/`64`/`66`/`67`/`69`）
 - [x] 商店：`ShowShop` + `instruct_64` + `50e` Rshop
 - [x] `LittleGameManager` 主路径（作诗/针灸/射雕/灯谜拼图/黑白棋/蛇/推块）
@@ -28,7 +41,7 @@
 - [x] 开场 `WalkInScene` / 标题对齐相关修正
 - [x] `ShowSceneName`（已有实现；氛围/ShowMap 仍缺）
 
-### 跨平台 / Android（方案 A）
+#### 跨平台 / Android（方案 A）
 - [x] `PlatformCompat`：数据根 / 存档路径发现、BACK→Esc+右键
 - [x] `FileLoader` 相对 `game_data`；非 Win 文本 `SDL_iconv`；Win 仍可用 MCI
 - [x] 非 Win BGM：WAV 循环；`scripts/convert_music_to_wav.ps1`
@@ -36,7 +49,7 @@
 - [x] `VirtualControls`：左下方向键、右上 Esc、右下 OK→Space（Android 默认开；桌面 `KYS_VIRTUAL_PAD=1`）
 - [x] `ANDROID.md` + assets 占位说明；Windows NDK 需 CMake 3.31.6 + `--target=aarch64-linux-android29`
 
-### 制作器（`editor/`，与引擎解耦）
+#### 制作器（`editor/`，与引擎解耦）
 - [x] 存档 / 事件 / 战斗 / 贴图 / 交叉引用
 - [x] 人物 / 物品 / 武功详情面板；opcode 中文下拉；talk GBK 优先
 - [x] 事件「插入指令」全量可搜索 opcode

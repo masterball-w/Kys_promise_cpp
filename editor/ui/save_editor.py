@@ -49,6 +49,7 @@ class SaveEditorWidget(QWidget):
         self._build_scenes_tab()
 
         ctx.dataRootChanged.connect(lambda _: self.refresh())
+        ctx.encodingChanged.connect(lambda _: self.refresh())
 
     def _on_slot(self) -> None:
         slot = self.slot_combo.currentData()
@@ -85,11 +86,17 @@ class SaveEditorWidget(QWidget):
             for c, v in enumerate([str(i), str(slot.number), name, str(slot.amount)]):
                 self.inv_table.setItem(i, c, QTableWidgetItem(v))
 
+        self.shop_table.blockSignals(True)
+        words = arc.shops.words
+        headers = ["店"] + [f"W{j}" for j in range(words)]
+        self.shop_table.setColumnCount(len(headers))
+        self.shop_table.setHorizontalHeaderLabels(headers)
         self.shop_table.setRowCount(arc.shops.count)
         for i in range(arc.shops.count):
-            row = [str(i)] + [str(arc.shops.get(i, j)) for j in range(18)]
+            row = [str(i)] + [str(arc.shops.get(i, j)) for j in range(words)]
             for c, v in enumerate(row):
                 self.shop_table.setItem(i, c, QTableWidgetItem(v))
+        self.shop_table.blockSignals(False)
 
         self.scene_table.setRowCount(arc.scenes.count)
         for i in range(arc.scenes.count):
@@ -176,9 +183,9 @@ class SaveEditorWidget(QWidget):
             pass
 
     def _build_shops_tab(self) -> None:
-        headers = ["店"] + [f"Item{i}" for i in range(18)]
-        self.shop_table = QTableWidget(0, len(headers))
-        self.shop_table.setHorizontalHeaderLabels(headers)
+        # Column count is refreshed from arc.shops.words (15 classic / 18 Promise)
+        self.shop_table = QTableWidget(0, 1)
+        self.shop_table.setHorizontalHeaderLabels(["店"])
         self.shop_table.cellChanged.connect(self._shop_cell_changed)
         self.tabs.addTab(self.shop_table, "商店")
 
@@ -188,8 +195,11 @@ class SaveEditorWidget(QWidget):
         item = self.shop_table.item(row, col)
         if not item:
             return
+        word = col - 1
+        if word >= self.ctx.ranger.shops.words:
+            return
         try:
-            self.ctx.ranger.shops.set(row, col - 1, int(item.text()))
+            self.ctx.ranger.shops.set(row, word, int(item.text()))
         except ValueError:
             pass
 

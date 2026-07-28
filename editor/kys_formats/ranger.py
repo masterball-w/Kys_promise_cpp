@@ -5,10 +5,15 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from .backup import atomic_write, backup_file
+from .encoding import decode_bytes, encode_text, normalize_encoding
 
+if TYPE_CHECKING:
+    from .profile import GameProfile
+
+# Defaults match 金庸群侠前传; prefer GameProfile / RangerLayout at runtime.
 ROLE_WORDS = 91
 ITEM_WORDS = 95
 SCENE_WORDS = 26
@@ -21,7 +26,28 @@ SCENE_BYTES = SCENE_WORDS * 2
 MAGIC_BYTES = MAGIC_WORDS * 2
 SHOP_BYTES = SHOP_WORDS * 2
 
-INVENTORY_SLOTS = 400  # disk layout; C++ engine may only use 300
+INVENTORY_SLOTS = 400  # Promise disk pad; classic games often ~200
+
+
+@dataclass(frozen=True)
+class RangerLayout:
+    role_words: int = ROLE_WORDS
+    item_words: int = ITEM_WORDS
+    scene_words: int = SCENE_WORDS
+    magic_words: int = MAGIC_WORDS
+    shop_words: int = SHOP_WORDS
+    inventory_slots: int = INVENTORY_SLOTS
+
+    @classmethod
+    def from_profile(cls, profile: "GameProfile") -> "RangerLayout":
+        return cls(
+            role_words=profile.role_words,
+            item_words=profile.item_words,
+            scene_words=profile.scene_words,
+            magic_words=profile.magic_words,
+            shop_words=profile.shop_words,
+            inventory_slots=profile.inventory_slots,
+        )
 
 
 def _i16(data: bytes, off: int) -> int:
@@ -36,29 +62,16 @@ def _set_i16(buf: bytearray, off: int, value: int) -> None:
     struct.pack_into("<h", buf, off, int(value))
 
 
-def decode_fixed_name(raw: bytes) -> str:
-    """Decode fixed-width ANSI/GBK name used inside ranger records."""
+def decode_fixed_name(raw: bytes, encoding: str = "auto") -> str:
+    """Decode fixed-width ANSI/GBK/Big5 name used inside ranger records."""
     raw = raw.split(b"\x00")[0]
     while raw and raw[-1:] in (b"\x00", b"\xff", b" "):
         raw = raw[:-1]
-    if not raw:
-        return ""
-    for enc in ("gbk", "big5", "cp950", "latin1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return raw.decode("latin1", errors="replace")
+    return decode_bytes(raw, encoding)
 
 
-def encode_fixed_name(text: str, nbytes: int) -> bytes:
-    try:
-        encoded = text.encode("gbk")
-    except UnicodeEncodeError:
-        encoded = text.encode("big5", errors="replace")
-    if len(encoded) > nbytes:
-        encoded = encoded[:nbytes]
-    return encoded.ljust(nbytes, b"\x00")
+def encode_fixed_name(text: str, nbytes: int, encoding: str = "auto") -> bytes:
+    return encode_text(text, encoding, nbytes=nbytes)
 
 
 @dataclass
@@ -92,6 +105,7 @@ class RangerHeader:
 class RecordTable:
     words: int
     records: List[List[int]] = field(default_factory=list)
+    text_encoding: str = "auto"
 
     @property
     def count(self) -> int:
@@ -102,10 +116,10 @@ class RecordTable:
             return ""
         rec = self.records[index]
         raw = b"".join(struct.pack("<h", rec[start_word + i]) for i in range(word_count))
-        return decode_fixed_name(raw)
+        return decode_fixed_name(raw, self.text_encoding)
 
     def set_name(self, index: int, name: str, start_word: int = 1, word_count: int = 5) -> None:
-        raw = encode_fixed_name(name, word_count * 2)
+        raw = encode_fixed_name(name, word_count * 2, self.text_encoding)
         for i in range(word_count):
             self.records[index][start_word + i] = struct.unpack_from("<h", raw, i * 2)[0]
 
@@ -119,7 +133,9 @@ class RecordTable:
 class RangerArchive:
     """Load/save one ranger slot (Ranger.grp or Rn.grp)."""
 
-    def __init__(self) -> None:
+    def __init__(self, layout: Optional[RangerLayout] = None) -> None:
+        self.layout = layout or RangerLayout()
+        self.text_encoding: str = "auto"
         self.idx_path: Optional[Path] = None
         self.grp_path: Optional[Path] = None
         self.role_offset = 0
@@ -129,11 +145,11 @@ class RangerArchive:
         self.shop_offset = 0
         self.total_len = 0
         self.header = RangerHeader()
-        self.roles = RecordTable(ROLE_WORDS)
-        self.items = RecordTable(ITEM_WORDS)
-        self.scenes = RecordTable(SCENE_WORDS)
-        self.magics = RecordTable(MAGIC_WORDS)
-        self.shops = RecordTable(SHOP_WORDS)
+        self.roles = RecordTable(self.layout.role_words)
+        self.items = RecordTable(self.layout.item_words)
+        self.scenes = RecordTable(self.layout.scene_words)
+        self.magics = RecordTable(self.layout.magic_words)
+        self.shops = RecordTable(self.layout.shop_words)
         self._raw: bytes = b""
 
     @staticmethod
@@ -177,11 +193,18 @@ class RangerArchive:
         if len(self._raw) < self.total_len:
             raise ValueError(f"grp size {len(self._raw)} < TotalLen {self.total_len}")
         self._parse_header()
-        self.roles = self._parse_table(self.role_offset, self.item_offset, ROLE_WORDS)
-        self.items = self._parse_table(self.item_offset, self.scene_offset, ITEM_WORDS)
-        self.scenes = self._parse_table(self.scene_offset, self.magic_offset, SCENE_WORDS)
-        self.magics = self._parse_table(self.magic_offset, self.shop_offset, MAGIC_WORDS)
-        self.shops = self._parse_table(self.shop_offset, self.total_len, SHOP_WORDS)
+        lay = self.layout
+        self.roles = self._parse_table(self.role_offset, self.item_offset, lay.role_words)
+        self.items = self._parse_table(self.item_offset, self.scene_offset, lay.item_words)
+        self.scenes = self._parse_table(self.scene_offset, self.magic_offset, lay.scene_words)
+        self.magics = self._parse_table(self.magic_offset, self.shop_offset, lay.magic_words)
+        self.shops = self._parse_table(self.shop_offset, self.total_len, lay.shop_words)
+        self._sync_table_encodings()
+
+    def _sync_table_encodings(self) -> None:
+        enc = normalize_encoding(self.text_encoding)
+        for table in (self.roles, self.items, self.scenes, self.magics, self.shops):
+            table.text_encoding = enc
 
     def _parse_header(self) -> None:
         d = self._raw
@@ -208,8 +231,8 @@ class RangerArchive:
         for i in range(slots):
             off = 42 + i * 4
             h.inventory.append(InventorySlot(_i16(d, off), _i16(d, off + 2)))
-        # Pad to INVENTORY_SLOTS for editor convenience
-        while len(h.inventory) < INVENTORY_SLOTS:
+        # Pad to profile inventory_slots for editor convenience
+        while len(h.inventory) < self.layout.inventory_slots:
             h.inventory.append(InventorySlot(-1, 0))
         self.header = h
 

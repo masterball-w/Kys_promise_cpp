@@ -536,6 +536,136 @@ void SceneManager::RefreshEventLayer(int sceneId) {
     std::cout << "[RefreshEventLayer] Refreshed " << count << " events." << std::endl;
 }
 
+void SceneManager::InitialScene() {
+    // Pascal WalkInScene / instruct_13 → InitialScene (kys_engine.pas):
+    //   1) clear SceneImg, setscene()
+    //   2) for each cell: if SData[3]>=0 then optionally DData[5]:=DData[7], then InitialSPic
+    // C++ has no SceneImg bake — keep allsin layer 3 (do NOT wipe), sync pics, live-draw in DrawScene.
+    const int sceneId = m_currentSceneId;
+    if (sceneId < 0 || (size_t)sceneId >= m_eventData.size()) {
+        std::cerr << "[InitialScene] No current scene (" << sceneId << ")" << std::endl;
+        return;
+    }
+    if (m_mapData.empty()) {
+        std::cerr << "[InitialScene] Map data empty — cannot build event layer" << std::endl;
+        return;
+    }
+
+    // Scene palette (Pascal resetpallet in WalkInScene)
+    if (Scene* sc = GetScene(sceneId)) {
+        int pal = sc->getPallet();
+        if (pal < 0 || pal > 3) pal = 0;
+        GraphicsUtils::resetPalette(pal);
+    }
+
+    int eventsOnLayer = 0;
+    int picsOnLayer = 0;
+
+    // Pascal order: walk SData layer 3 from the loaded map — never clear it first.
+    for (int i1 = 0; i1 < SCENE_MAP_SIZE; ++i1) {
+        for (int i2 = 0; i2 < SCENE_MAP_SIZE; ++i2) {
+            const int16_t e = GetSceneTile(sceneId, 3, i1, i2);
+            if (e < 0 || e >= 200) continue;
+            ++eventsOnLayer;
+
+            // Pascal: if DData[7] > 0 then DData[5] := DData[7]  (also handle <0 for Scene.Pic)
+            const int16_t pic7 = GetEventData(sceneId, e, 7);
+            if (pic7 != 0) {
+                SetEventData(sceneId, e, 5, pic7);
+            }
+            if (GetEventData(sceneId, e, 5) != 0) {
+                ++picsOnLayer;
+            }
+        }
+    }
+
+    // If allsin layer 3 was empty/stale, fall back to rebuilding from DData.
+    if (eventsOnLayer == 0) {
+        std::cerr << "[InitialScene] Layer3 empty on scene " << sceneId
+                  << " — rebuilding from DData" << std::endl;
+        RefreshEventLayer(sceneId);
+        eventsOnLayer = 0;
+        picsOnLayer = 0;
+        for (int i1 = 0; i1 < SCENE_MAP_SIZE; ++i1) {
+            for (int i2 = 0; i2 < SCENE_MAP_SIZE; ++i2) {
+                const int16_t e = GetSceneTile(sceneId, 3, i1, i2);
+                if (e < 0 || e >= 200) continue;
+                ++eventsOnLayer;
+                const int16_t pic7 = GetEventData(sceneId, e, 7);
+                if (pic7 != 0) SetEventData(sceneId, e, 5, pic7);
+                if (GetEventData(sceneId, e, 5) != 0) ++picsOnLayer;
+            }
+        }
+    } else {
+        // Soft repair: place any DData event missing from layer 3 (without wiping others)
+        for (int e = 0; e < 200; ++e) {
+            const int16_t x = GetEventData(sceneId, e, 10);
+            const int16_t y = GetEventData(sceneId, e, 9);
+            if (x <= 0 || x >= SCENE_MAP_SIZE || y < 0 || y >= SCENE_MAP_SIZE) continue;
+            if (GetSceneTile(sceneId, 3, x, y) < 0) {
+                SetSceneTile(sceneId, 3, x, y, static_cast<int16_t>(e));
+                ++eventsOnLayer;
+                if (GetEventData(sceneId, e, 5) != 0 || GetEventData(sceneId, e, 7) != 0) {
+                    const int16_t pic7 = GetEventData(sceneId, e, 7);
+                    if (pic7 != 0) SetEventData(sceneId, e, 5, pic7);
+                    if (GetEventData(sceneId, e, 5) != 0) ++picsOnLayer;
+                }
+            }
+        }
+    }
+
+    int ddataWithPic = 0;
+    int layerWithPic = 0;
+    for (int e = 0; e < 200; ++e) {
+        const int16_t pic5 = GetEventData(sceneId, e, 5);
+        if (pic5 == 0) continue;
+        ++ddataWithPic;
+        const int16_t y = GetEventData(sceneId, e, 9);
+        const int16_t x = GetEventData(sceneId, e, 10);
+        if (x > 0 && x < SCENE_MAP_SIZE && y >= 0 && y < SCENE_MAP_SIZE) {
+            if (GetSceneTile(sceneId, 3, x, y) == e) {
+                ++layerWithPic;
+            } else {
+                std::cerr << "[InitialScene] MISSING on layer3: ev" << e
+                          << " pic=" << pic5 << " at (X,Y)=(" << x << "," << y
+                          << ") sdata=" << GetSceneTile(sceneId, 3, x, y) << std::endl;
+            }
+        }
+    }
+
+    for (int e : {0, 1, 2, 7}) {
+        const int16_t pic5 = GetEventData(sceneId, e, 5);
+        const int16_t pic7 = GetEventData(sceneId, e, 7);
+        const int16_t y = GetEventData(sceneId, e, 9);
+        const int16_t x = GetEventData(sceneId, e, 10);
+        const int16_t onMap = (x > 0 && y >= 0 && x < SCENE_MAP_SIZE && y < SCENE_MAP_SIZE)
+                                  ? GetSceneTile(sceneId, 3, x, y)
+                                  : static_cast<int16_t>(-999);
+        std::cout << "[InitialScene] ev" << e
+                  << " pic5=" << pic5 << " pic7=" << pic7
+                  << " pos(Y,X)=(" << y << "," << x << ")"
+                  << " sdata=" << onMap
+                  << " smpNum=" << (pic5 != 0 ? (pic5 / 2) : 0)
+                  << std::endl;
+    }
+    std::cout << "[InitialScene] scene=" << sceneId
+              << " layerEvents=" << eventsOnLayer
+              << " layerPics=" << picsOnLayer
+              << " ddataPics=" << ddataWithPic
+              << " matchedPics=" << layerWithPic
+              << std::endl;
+    if (ddataWithPic > 0 && layerWithPic == 0) {
+        std::cerr << "[InitialScene] CRITICAL: DData has pics but layer3 has none — event layer failed to build" << std::endl;
+    }
+}
+
+void SceneManager::UpdateSceneGraphic(int mapX, int mapY, int /*oldPic*/, int /*newPic*/) {
+    if (mapX < 0 || mapY < 0 || mapX >= SCENE_MAP_SIZE || mapY >= SCENE_MAP_SIZE) {
+        return;
+    }
+    // Pascal updates pre-baked SceneImg; this engine redraws from SData/DData each frame.
+}
+
 void SceneManager::DrawClouds(SDL_Renderer* renderer, int centerX, int centerY) {
     if (m_cloudPicData.empty()) return;
     
@@ -796,194 +926,51 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
         return; // Nothing to draw
     }
 
-    // Optimization: Pre-calculate Sprite Map
-    // Map: [x][y] -> Sprite Index (Pic)
-    // Initialize with -1 (No Sprite)
-    // Using a flat vector or stack array? 64x64 is small (4KB).
-    static int16_t spriteMap[SCENE_MAP_SIZE][SCENE_MAP_SIZE];
-    for(int i=0; i<SCENE_MAP_SIZE; ++i)
-        for(int j=0; j<SCENE_MAP_SIZE; ++j)
-            spriteMap[i][j] = -1;
-    bool hidePlayer = false;
-    if (m_currentSceneId >= 0 && m_currentSceneId < (int)m_eventData.size()) {
-        int centerEvent = GetSceneTile(m_currentSceneId, 3, centerX, centerY);
-        int16_t pic0 = m_eventData[m_currentSceneId].data[0][5];
-        if (centerEvent == 0 && pic0 != 0) hidePlayer = true;
+    // Opaque clear (ARGB). Alpha=0 left holes that Talk/CaptureScreen could treat oddly.
+    if (SDL_Surface* screen = GameManager::getInstance().getScreenSurface()) {
+        SDL_FillSurfaceRect(screen, nullptr, 0xFF000000);
     }
 
-    int px, py;
-    GetPositionOnScreen(centerX, centerY, centerX, centerY, px, py);
-    
-    // Draw tiles
-    // Pascal draws layer 0, 1, 2, then Events (Layer 3 refs), then Roles.
-    // Actually DrawRoleOnScene draws everything in a specific order per tile.
-    
-    // Iterate Screen (or Map Range)
-    // Pascal iterates 64x64 (Full Map) in DrawRoleOnScene?
-    // No, it iterates visible range implicitly or explicit full loop?
-    // Pascal: for i1 := 0 to 63 do for i2 := 0 to 63 do
-    // It iterates the WHOLE 64x64 map! (Small enough).
-    
-    for (int i = 0; i < SCENE_MAP_SIZE; ++i) { // X (or Y? Pascal: i1)
-        for (int j = 0; j < SCENE_MAP_SIZE; ++j) { // Y (or X? Pascal: i2)
-            // i, j are Map Coordinates
-            int sx, sy;
-            GetPositionOnScreen(i, j, centerX, centerY, sx, sy);
-            
-            // Check if visible (roughly)
-            if (sx < -100 || sx > 640 + 100 || sy < -100 || sy > 480 + 100) continue;
-
-            // Layer 0 (Ground)
-            int16_t t0 = GetSceneTile(m_currentSceneId, 0, i, j);
-            // Pascal: if SData > 0 then DrawSPic... else if < 0 DrawSNewPic...
-            // For now assume > 0 (Standard)
-            if (t0 != 0) {
-                 if (t0 > 0) DrawSmpSprite(renderer, t0 / 2 - 1, sx, sy);
-                 else DrawScenePicSprite(renderer, -t0 / 2 - 1, sx, sy);
-            }
-
-            // Layer 1 (Surface/Object)
-            int16_t t1 = GetSceneTile(m_currentSceneId, 1, i, j);
-            int16_t h1 = GetSceneTile(m_currentSceneId, 4, i, j); // Height
-            if (t1 != 0) {
-                 if (t1 > 0) DrawSmpSprite(renderer, t1 / 2 - 1, sx, sy - h1);
-                 else DrawScenePicSprite(renderer, -t1 / 2 - 1, sx, sy - h1);
-            }
-            
-            // Layer 2 (Above)
-            int16_t t2 = GetSceneTile(m_currentSceneId, 2, i, j);
-            int16_t h2 = GetSceneTile(m_currentSceneId, 5, i, j); // Height 2? Or same height?
-            // Pascal uses SData[..., 5, ...] for Layer 2 height offset
-            if (t2 != 0) {
-                 if (t2 > 0) DrawSmpSprite(renderer, t2 / 2 - 1, sx, sy - h2);
-                 else DrawScenePicSprite(renderer, -t2 / 2 - 1, sx, sy - h2);
-            }
-            
-            // Layer 3 (Events)
-            // SData[..., 3, i, j] contains Event Index
-            int16_t eventIdx = GetSceneTile(m_currentSceneId, 3, i, j);
-            if (eventIdx >= 0) {
-                // Look up DData
-                int16_t pic = GetEventData(m_currentSceneId, eventIdx, 5);
-                if (pic != 0) {
-                     int16_t h = GetSceneTile(m_currentSceneId, 4, i, j); // Events usually stand on ground/object height
-                     if (pic > 0) {
-                         DrawSmpSprite(renderer, pic / 2 - 1, sx, sy - h);
-                     } else {
-                         DrawScenePicSprite(renderer, -pic / 2 - 1, sx, sy - h);
-                     }
-                }
-            }
-            
-            // Draw Player (if at this tile) — Pascal DrawRoleOnScene gated by ShowMR
-            if (!hidePlayer && GameManager::getInstance().getShowMR() && i == centerX && j == centerY) {
-                int face = GameManager::getInstance().getSubMapFace();
-                int step = GameManager::getInstance().getWalkFrame();
-                // Face: 0,1,2,3 -> Pascal mapping might differ
-                // Pascal: 2501 + SFace * 7 + SStep
-                // SFace: 0,1,2,3?
-                int playerPic = 2501 + face * 7 + step;
-                int16_t h = GetSceneTile(m_currentSceneId, 4, i, j);
-                DrawSmpSprite(renderer, playerPic, sx, sy - h); // 2501 is index? No, 2501 is PicNum.
-                // Wait, DrawSmpSprite takes INDEX.
-                // Pascal: DrawSPic(2501...).
-                // If 2501 is PicNum, and user said "index = pic/2 - 1".
-                // Does 2501 follow this? 2501 is odd. 2501 div 2 = 1250.
-                // So index = 1249?
-                // Or is 2501 ALREADY an index for DrawSPic?
-                // Pascal DrawMMap: temp := 2501...; temp := temp * 2;
-                // So 2501 IS the value before doubling.
-                // So effectively, PicNum = 2501 * 2 = 5002.
-                // DData stores 5002.
-                // So DData/2 = 2501.
-                // So if DrawSmpSprite takes "Index", is it 2501?
-                // My LoadResources log: "Player Offset (2501): ..."
-                // This implies 2501 is a direct index into the offset array (sdx).
-                // So for Player, we use 2501 directly.
-                // BUT for DData, DData stores Pic*2.
-                // So we do (DDataVal / 2) - 1.
-                // Example: DData has 5002. 5002/2 = 2501. 2501 - 1 = 2500.
-                // Wait, if 2501 is the player sprite, and I pass 2500, I get the wrong one?
-                // User said: "pic/2-1".
-                // If 2501 is the correct index, then (5002 / 2) - 1 = 2500.
-                // Maybe Player starts at 2500?
-                // Let's assume the user rule "pic/2-1" applies to DData values.
-                // For the Player calculation `2501 + ...`, this is already an "Index" (or PicNum).
-                // If I use `DrawSmpSprite(2501...)` it assumes 2501 is the index.
-                // Let's check `DrawSmpSprite` implementation.
-            }
+    static int16_t spriteMap[SCENE_MAP_SIZE][SCENE_MAP_SIZE];
+    for (int i = 0; i < SCENE_MAP_SIZE; ++i) {
+        for (int j = 0; j < SCENE_MAP_SIZE; ++j) {
+            spriteMap[i][j] = -1;
         }
     }
-    GameManager::getInstance().getMainMapPosition(px, py);
-    if (!hidePlayer && GameManager::getInstance().getShowMR() &&
-        px >= 0 && px < SCENE_MAP_SIZE && py >= 0 && py < SCENE_MAP_SIZE) {
-        // Player sprite index
-        // Base: 2501 (Protagonist)
-        // Face Mapping:
-        // 0 = South (Down) -> 0
-        // 1 = North (Up) -> 2
-        // 2 = West (Left) -> 3
-        // 3 = East (Right) -> 1
-        
-        int face = GameManager::getInstance().getMainMapFace();
-        int spriteFace = 0;
-        // KYS ISO View Mapping:
-         // 0 = South (Down) -> 0
-         // 1 = North (Up) -> 1
-         // 2 = West (Left) -> 2
-         // 3 = East (Right) -> 3
-         
-         // Final Fine-Tuning based on feedback:
-         // Left (2) -> Sprite 2 (Correct)
-         // Down (0) -> Sprite 3 (Correct)
-         // Right (3) -> Sprite 0 (Wrong)
-         // Up (1) -> Sprite 1 (Wrong)
-         
-         // If Right(3) is not 0, and can't be 2 or 3 (taken).
-         // Then Right(3) MUST be Sprite 1.
-         
-         // If Up(1) is not 1, and can't be 2 or 3 (taken).
-         // Then Up(1) MUST be Sprite 0.
-         
-         // So the mapping must be:
-         // Down (0) -> Sprite 3
-         // Up (1) -> Sprite 0
-         // Left (2) -> Sprite 2
-         // Right (3) -> Sprite 1
-         
-         switch(face) {
-             case 0: spriteFace = 3; break; // Down -> Sprite 3
-             case 1: spriteFace = 0; break; // Up -> Sprite 0
-             case 2: spriteFace = 2; break; // Left -> Sprite 2
-             case 3: spriteFace = 1; break; // Right -> Sprite 1
-         }
-         
-         int frame = GameManager::getInstance().getWalkFrame();
-        
-        // Pic Calculation: Base + Face * 7 + Frame
-        int playerPic = 2501 + spriteFace * 7 + frame;
-        
-        spriteMap[px][py] = playerPic; 
+    bool hidePlayer = false;
+    int playerX = centerX;
+    int playerY = centerY;
+    GameManager::getInstance().getMainMapPosition(playerX, playerY);
+    if (m_currentSceneId >= 0 && m_currentSceneId < static_cast<int>(m_eventData.size())) {
+        const int centerEvent = GetSceneTile(m_currentSceneId, 3, playerX, playerY);
+        const int16_t pic0 = m_eventData[m_currentSceneId].data[0][5];
+        if (centerEvent == 0 && pic0 != 0) {
+            hidePlayer = true;
+        }
     }
 
-    // Render back-to-front
-    static int eventLayerCount = 0; // Use static to prevent loop, but reset occasionally?
-    // Actually, just log once per scene load or something.
-    // Or just comment it out now that we confirmed Event 3 is found but Pic is 0.
-    
+    // Pre-calculate player sprite for back-to-front pass (Pascal: 2501 + SFace * 7 + SStep)
+    if (!hidePlayer && GameManager::getInstance().getShowMR() &&
+        playerX >= 0 && playerX < SCENE_MAP_SIZE && playerY >= 0 && playerY < SCENE_MAP_SIZE) {
+        const int face = GameManager::getInstance().getSubMapFace();
+        const int frame = GameManager::getInstance().getWalkFrame();
+        spriteMap[playerX][playerY] = static_cast<int16_t>(2501 + face * 7 + frame);
+    }
+
+    // Render back-to-front (tiles, event NPCs, player)
+    int eventsDrawn = 0;
     for (int i1 = 0; i1 < SCENE_MAP_SIZE; ++i1) {
         for (int i2 = 0; i2 < SCENE_MAP_SIZE; ++i2) {
             int x, y;
             GetPositionOnScreen(i1, i2, centerX, centerY, x, y);
             
-            // Culling
-            if (x < -200 || x > 840 || y < -200 || y > 680) continue; 
+            // Culling — keep generous margin so tall event sprites near screen edge still draw
+            if (x < -200 || x > 840 || y < -280 || y > 680) continue; 
 
             // Layer 0: Ground
             int16_t tile0 = GetSceneTile(m_currentSceneId, 0, i1, i2);
             if (tile0 > 0) {
-                // Fix: Tile index off by one (user feedback)
-                // (tile / 2) - 1 maps 2 -> 0, 4 -> 1, etc.
+                // (tile / 2) - 1 maps 2 -> 0, 4 -> 1, etc. (Pascal DrawRLE8Pic uses SIdx[num-1])
                 DrawTile(renderer, (tile0 / 2) - 1, x, y, 0, 0);
             }
             
@@ -1001,25 +988,40 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
                 DrawTile(renderer, (tile2 / 2) - 1, x, y - height2, 0, 0);
             }
             
-            // Layer 3: Event
+            // Layer 3: Event — Pascal DrawSPic(DData[5] div 2) via same smp path as tiles (no CHAR_SCALE)
             int16_t tile3 = GetSceneTile(m_currentSceneId, 3, i1, i2);
             
             if (tile3 >= 0 && tile3 < 200) { // tile3 is Event ID (0..199)
-                // tile3 is eventIndex. Get EventData to find pic.
-                // KYS Event Data: Index 5 is Pic
+                // Pascal DrawRoleOnScene / InitialScene: draw DData[..., 5] as-is
                 int16_t eventPic = GetEventData(m_currentSceneId, tile3, 5);
-                int16_t defaultPic = GetEventData(m_currentSceneId, tile3, 7);
-                if (defaultPic != 0 && eventPic != defaultPic) {
-                    SetEventData(m_currentSceneId, tile3, 5, defaultPic);
-                    eventPic = defaultPic;
-                }
-                
+
                 if (eventPic != 0) { // Pascal logic: if <> 0 then draw
                     int drawY = y - height1;
                     if (eventPic > 0) {
-                        DrawSmpSprite(renderer, (eventPic / 2) - 1, x, drawY, 0);
+                        const int smpIndex = (eventPic / 2) - 1;
+                        if (eventPic == 8282 || eventPic == 8286 || eventPic == 8268 ||
+                            eventPic == 2608 ||
+                            tile3 == 0 || tile3 == 1 || tile3 == 2 || tile3 == 7) {
+                            static int s_logged = 0;
+                            if (s_logged < 32) {
+                                std::cout << "[DrawScene] event=" << tile3
+                                          << " pic=" << eventPic
+                                          << " smpIndex=" << smpIndex
+                                          << " smpNum=" << (eventPic / 2)
+                                          << " map=(" << i1 << "," << i2 << ")"
+                                          << " screen=(" << x << "," << drawY << ")"
+                                          << " cam=(" << centerX << "," << centerY << ")"
+                                          << " ShowMR=" << GameManager::getInstance().getShowMR()
+                                          << std::endl;
+                                ++s_logged;
+                            }
+                        }
+                        // Same path as ground/building tiles (scale=1). CHAR_SCALE is for walk sprites only.
+                        DrawTile(renderer, smpIndex, x, drawY, 0, 0);
+                        ++eventsDrawn;
                     } else {
                         DrawMmapSprite(renderer, (-eventPic / 2) - 1, x, drawY, 0);
+                        ++eventsDrawn;
                     }
                 }
             }
@@ -1032,9 +1034,19 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
             }
         }
     }
-    
-    // Draw Clouds over the map
-    DrawClouds(renderer, centerX, centerY);
+
+    {
+        static int s_summary = 0;
+        if (s_summary < 8) {
+            std::cout << "[DrawScene] scene=" << m_currentSceneId
+                      << " cam=(" << centerX << "," << centerY << ")"
+                      << " eventsDrawn=" << eventsDrawn << std::endl;
+            ++s_summary;
+        }
+    }
+
+    // Pascal: DrawClouds is only used by DrawMMap, never by DrawScene.
+    // Opaque clouds here previously covered opening NPC sprites (e.g. pic 8282).
 }
 
 // Global Scale for Characters

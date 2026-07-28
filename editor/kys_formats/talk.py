@@ -7,42 +7,20 @@ from pathlib import Path
 from typing import List, Optional
 
 from .backup import atomic_write, backup_file
+from .encoding import decode_talk_payload, encode_talk_payload, normalize_encoding
 
 
 def xor_ff(data: bytes) -> bytes:
     return bytes(b ^ 0xFF for b in data)
 
 
-def decode_talk_bytes(raw: bytes) -> str:
-    """XOR 0xFF then decode. This game's talk.grp is GBK; Big5 must not come first
-    because many GBK sequences are also 'valid' Big5 and become mojibake
-    (e.g. talk 2764: 你是誰？… → 斕岆掞ˋ…)."""
-    dec = xor_ff(raw)
-    out = bytearray()
-    for b in dec:
-        if b in (0x00, 0xFF):
-            break
-        out.append(b)
-    if not out:
-        return ""
-    for enc in ("gbk", "cp936", "big5", "cp950", "utf-8"):
-        try:
-            return out.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return out.decode("latin1", errors="replace")
+def decode_talk_bytes(raw: bytes, encoding: str = "auto") -> str:
+    """XOR 0xFF then decode. Auto mode prefers GBK before Big5 (see encoding.py)."""
+    return decode_talk_payload(raw, encoding)
 
 
-def encode_talk_text(text: str) -> bytes:
-    for enc in ("gbk", "cp936", "big5", "cp950"):
-        try:
-            raw = text.encode(enc)
-            break
-        except UnicodeEncodeError:
-            continue
-    else:
-        raw = text.encode("latin1", errors="replace")
-    return xor_ff(raw + b"\x00")
+def encode_talk_text(text: str, encoding: str = "auto") -> bytes:
+    return encode_talk_payload(text, encoding)
 
 
 class _IdxGrpTextArchive:
@@ -52,6 +30,7 @@ class _IdxGrpTextArchive:
         self.grp_path: Optional[Path] = None
         self.offsets: List[int] = []
         self.entries: List[bytes] = []  # raw encrypted bytes per entry
+        self.text_encoding: str = "auto"
 
     @property
     def count(self) -> int:
@@ -90,15 +69,15 @@ class _IdxGrpTextArchive:
         """1-based id."""
         if entry_id <= 0 or entry_id > len(self.entries):
             return ""
-        return decode_talk_bytes(self.entries[entry_id - 1])
+        return decode_talk_bytes(self.entries[entry_id - 1], self.text_encoding)
 
     def set_text(self, entry_id: int, text: str) -> None:
         if entry_id <= 0 or entry_id > len(self.entries):
             raise IndexError(entry_id)
-        self.entries[entry_id - 1] = encode_talk_text(text)
+        self.entries[entry_id - 1] = encode_talk_text(text, self.text_encoding)
 
     def append_text(self, text: str) -> int:
-        self.entries.append(encode_talk_text(text))
+        self.entries.append(encode_talk_text(text, self.text_encoding))
         return len(self.entries)
 
     def _rebuild_offsets(self) -> None:

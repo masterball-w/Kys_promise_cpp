@@ -392,13 +392,13 @@ class ItemEditorPanel(QWidget):
             self.lbl_type.setText(f"类型: {item_type_display(int(t))}")
 
     def _refresh_icon(self) -> None:
-        pic = self.ctx.items_pic
+        bank = self.ctx.items_pic
         iid = self._iid
-        if not pic or iid < 0 or iid >= pic.count:
+        if bank is None or iid < 0 or iid >= bank.count:
             self.icon_preview.setText("无图")
             return
         try:
-            img = pic.frames[iid].to_image()
+            img = bank.get_image(iid)
             if img is None:
                 self.icon_preview.setText("空帧")
                 return

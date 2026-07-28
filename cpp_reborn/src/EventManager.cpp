@@ -99,7 +99,14 @@ void EventManager::Instruct_19(int x, int y) {
 }
 
 void EventManager::Instruct_40(int dir) {
-    GameManager::getInstance().setMainMapFace(dir);
+    auto& gm = GameManager::getInstance();
+    dir &= 3;
+    if (gm.getCurrentSceneId() >= 0) {
+        // Pascal instruct_40: Sface := director (scene roaming face)
+        gm.setSubMapFace(static_cast<int16_t>(dir));
+    } else {
+        gm.setMainMapFace(dir);
+    }
 }
 
 EventManager::EventManager() {}
@@ -1764,11 +1771,21 @@ void EventManager::Instruct_ModifyEvent(const std::vector<int16_t>& args) {
     if (arg11 == -2) arg11 = currentY;
     if (arg12 == -2) arg12 = currentX;
 
-    // Clear old SData (Layer 3)
-    if (currentX >= 0 && currentY >= 0) {
+    const int oldPic = sm.GetEventData(sceneId, eventId, 5);
+    const int newPic = (args[7] != -2) ? args[7] : oldPic;
+
+    // Pascal: clear old SData when X>0 and Y>=0 (before DData mutation)
+    if (currentX > 0 && currentY >= 0) {
         if (sm.GetSceneTile(sceneId, 3, currentX, currentY) == eventId) {
-            sm.SetSceneTile(sceneId, 3, currentX, currentY, -1); 
+            sm.SetSceneTile(sceneId, 3, currentX, currentY, -1);
         }
+    }
+
+    const int curSceneId = GameManager::getInstance().getCurrentSceneId();
+    const bool onCurrentScene = (sceneId == curSceneId);
+
+    if (onCurrentScene && (currentY != arg11 || currentX != arg12)) {
+        sm.UpdateSceneGraphic(currentX, currentY, oldPic, 0);
     }
 
     // Update DData
@@ -1786,12 +1803,23 @@ void EventManager::Instruct_ModifyEvent(const std::vector<int16_t>& args) {
     if (arg12 != -2) sm.SetEventData(sceneId, eventId, 10, arg12); // X
     if (arg11 != -2) sm.SetEventData(sceneId, eventId, 9, arg11);  // Y
 
-    // Set new SData
+    // Set new SData (Pascal: DData[10]>0 and DData[9]>=0)
     int newY = sm.GetEventData(sceneId, eventId, 9);
     int newX = sm.GetEventData(sceneId, eventId, 10);
-    
-    if (newX >= 0 && newY >= 0) {
-        sm.SetSceneTile(sceneId, 3, newX, newY, eventId);
+
+    if (newX > 0 && newY >= 0) {
+        sm.SetSceneTile(sceneId, 3, newX, newY, static_cast<int16_t>(eventId));
+        std::cout << "ModEvent: SData[" << sceneId << ",3," << newX << "," << newY
+                  << "]=" << eventId << " pic=" << sm.GetEventData(sceneId, eventId, 5) << std::endl;
+    }
+
+    if (onCurrentScene) {
+        const bool picOrCoordChanged =
+            (args[7] != -2) || (args[8] != -2) || (args[9] != -2) ||
+            (args[10] != -2) || (args[11] != -2) || (args[12] != -2);
+        if (picOrCoordChanged) {
+            sm.UpdateSceneGraphic(newX, newY, oldPic, newPic);
+        }
     }
 
     // Force redraw
@@ -1804,7 +1832,13 @@ void EventManager::Instruct_ModifyEvent(const std::vector<int16_t>& args) {
     int currentSceneId = GameManager::getInstance().getCurrentSceneId();
     bool isCurrentScene = (sceneId == -2) || (sceneId == -1) || (sceneId == currentSceneId); // Fixed: -1 also means current scene in KYS scripts
     
-    std::cout << "ModEvent Check: Scene=" << sceneId << " (Cur=" << currentSceneId << ") Event=" << eventId << std::endl;
+    std::cout << "ModEvent Check: Scene=" << sceneId << " (Cur=" << currentSceneId << ") Event=" << eventId
+              << " args7-9=[" << args[7] << "," << args[8] << "," << args[9] << "]"
+              << " pos(Y,X)=(" << newY << "," << newX << ")"
+              << " pic5=" << sm.GetEventData(sceneId, eventId, 5)
+              << " pic7=" << sm.GetEventData(sceneId, eventId, 7)
+              << " sdata=" << ((newX > 0 && newY >= 0) ? sm.GetSceneTile(sceneId, 3, newX, newY) : -999)
+              << std::endl;
 
     if (isCurrentScene) {
         // Re-fetch sceneId if it was -2 or -1
@@ -1993,6 +2027,7 @@ int EventManager::Instruct_CheckMoney(int moneyNeeded, int jump1, int jump2) {
 
 void EventManager::Instruct_FadeIn() {
     // Pascal instruct_13: InitialScene; then fade black overlay out while Redraw
+    SceneManager::getInstance().InitialScene();
     Instruct_Redraw();
     UIManager::getInstance().FadeScreen(true);
 }
@@ -3123,6 +3158,30 @@ void EventManager::Instruct_25(int x1, int y1, int x2, int y2) {
     // Update Global Position (Camera Center ONLY)
     // DO NOT update Player Position (m_mainMapX/Y) or Facing
     GameManager::getInstance().setCameraPosition(y2, x2);
+
+    // Ensure final frame is on the software surface (Talk freezes this buffer).
+    Instruct_Redraw();
+
+    {
+        auto& sm = SceneManager::getInstance();
+        const int sceneId = GameManager::getInstance().getCurrentSceneId();
+        for (int e : {0, 1, 2, 7}) {
+            const int16_t pic = sm.GetEventData(sceneId, e, 5);
+            const int16_t ey = sm.GetEventData(sceneId, e, 9);
+            const int16_t ex = sm.GetEventData(sceneId, e, 10);
+            int sx = 0, sy = 0;
+            if (ex > 0 && ey >= 0) {
+                sm.GetPositionOnScreen(ex, ey, y2, x2, sx, sy);
+            }
+            std::cout << "[Instruct_25 done] ev" << e
+                      << " pic=" << pic
+                      << " map(X,Y)=(" << ex << "," << ey << ")"
+                      << " screen=(" << sx << "," << sy << ")"
+                      << " cam=(" << y2 << "," << x2 << ")"
+                      << " sdata=" << ((ex > 0 && ey >= 0) ? sm.GetSceneTile(sceneId, 3, ex, ey) : -999)
+                      << std::endl;
+        }
+    }
 
     InputManager::getInstance().FlushEvents();
     SDL_Delay(100);

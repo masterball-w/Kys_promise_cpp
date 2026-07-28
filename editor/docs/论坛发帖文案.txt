@@ -1,0 +1,135 @@
+KYS 通用制作器（Kys General Editor）功能说明
+
+项目地址：https://github.com/masterball-w/Kys_general_editor
+
+一、概述
+
+本工具为金庸群侠传系（KYS）引擎游戏的数据编辑器，与 C++ 引擎源码解耦，仅读写游戏数据目录。通过配置档（GameProfile）适配不同游戏在记录字宽、目录结构、贴图存储方式上的差异，可用于前传 game_data 布局，以及经典散图与 idx/grp 布局（如天龙八部改版等）。
+
+下文截图基于「天龙八部 / GodsDevils」数据根（含 save、resource 及 head/item 散图目录）。截图文件位于仓库 docs/screenshots 目录。
+
+二、安装与运行
+
+1. 安装依赖：pip install -r requirements.txt
+2. 启动程序：python main.py
+3. 选择数据根目录（须同时包含 save 与 resource）
+4. 可在工具栏指定配置档：前传 / 经典 / GodsDevils；亦可使用自动探测
+5. 写回磁盘前自动生成 .bak 备份
+
+重新生成界面截图（需本地游戏数据）：python scripts/capture_screenshots.py
+
+三、功能说明
+
+（一）主界面
+
+工具栏提供：数据根选择、全部重新加载、配置档、文本编码。主区域为功能页签。
+
+附图：docs/screenshots/00_main_overview.png
+
+（二）存档数据
+
+编辑 Ranger.grp / Rn.grp，包括人物、物品、武功、背包、商店、场景元数据。
+
+附图：docs/screenshots/01_save_data.png
+
+子功能：
+
+1. 人物：属性、装备、武功栏、头像预览
+   附图：docs/screenshots/01_save__roles.png
+
+2. 物品定义：类型、加成、需求；合成材料字段 NeedItem / NeedMatAmount
+   附图：docs/screenshots/01_save__items.png
+
+3. 武功：威力曲线、攻击范围、功体属性、特效预览
+   附图：docs/screenshots/01_save__magic.png
+
+4. 背包：物品栏槽位编辑
+   附图：docs/screenshots/01_save__inventory.png
+
+5. 商店：列数随配置档字宽（15 或 18）变化
+   附图：docs/screenshots/01_save__shops.png
+
+6. 场景元数据：场景名称、入场条件、地图编号等
+   附图：docs/screenshots/01_save__scenes.png
+
+（三）事件
+
+包含 Kdef 脚本编辑、对话库、场景事件挂接（DData）、SData 事件层俯视图。
+
+附图：docs/screenshots/02_events.png
+
+1. 事件脚本：Opcode 中文名称与参数释义；支持指令插入、删除及写回 kdef
+   附图：docs/screenshots/02_events__script.png
+
+2. 对话库：查看与编辑对话文本
+   附图：docs/screenshots/02_events__talk.png
+
+3. 场景事件挂接：编辑 DData 中脚本引用、贴图与坐标等字段
+   附图：docs/screenshots/02_events__ddata.png
+
+4. SData 事件层：以层 0 地面砖主色生成俯视图，事件格以红色半透明显示；支持调整模式笔刷编辑
+   附图：docs/screenshots/02_events__sdata_map.png
+
+（四）战斗
+
+编辑 War.sta 战斗列表与字段；战场地形 warfld 提供俯视图（基于 wmp 砖主色）。
+
+附图：docs/screenshots/03_battle.png
+附图：docs/screenshots/03_battle__list.png
+附图：docs/screenshots/03_battle__edit.png
+附图：docs/screenshots/03_battle__field_map.png
+
+（五）大地图
+
+编辑 earth / surface / building 等 .002 层数据（480×480），以 mmap 砖库主色显示俯视图。
+
+附图：docs/screenshots/04_world_map.png
+
+（六）贴图
+
+按配置档打开 .Pic 贴图包，或提示经典散图与 idx/grp 路径；支持场景砖 RLE 预览与索引联动。
+
+附图：docs/screenshots/05_assets.png
+附图：docs/screenshots/05_assets__common.png
+附图：docs/screenshots/05_assets__tiles.png
+
+（七）交叉引用
+
+按战斗编号、物品等查询脚本中的引用关系。
+
+附图：docs/screenshots/06_crossref.png
+
+四、配置档差异
+
+项目                前传（Promise）              经典 / GodsDevils
+Magic 字宽          111                         68
+Shop 字宽           18                          15
+War 字宽            156                         93
+背包槽数量          约 400                      约 200
+头像 / 物品图       resource 下 Heads/Items.Pic head/*.png、item/*.png
+战斗 / 特效         fight/NNN/MM.pic、eft/*.pic fightNNN.grp、resource/eft.idx
+
+五、程序接口（无界面）
+
+格式库可独立调用，示例：
+
+from kys_formats import RangerArchive, RangerLayout, detect_profile, WarArchive
+profile = detect_profile("../")
+arc = RangerArchive(RangerLayout.from_profile(profile))
+arc.load("path/to/save")
+
+六、注意事项
+
+1. 背包槽按磁盘实际长度读写，并填充至配置档 inventory_slots。
+2. 对话与姓名数据一般为 XOR 0xFF，文本编码为 Big5 或 GBK；GodsDevils 存档名称偏 Big5。
+3. 经典 eft / fight / hdgrp 为调色板 RLE 格式，部分面板预览功能尚不完整。
+4. 本仓库仅包含编辑器源码与界面截图，不包含游戏二进制资源。请勿将 save、resource 或完整 game_data 提交至版本库。
+
+七、测试
+
+执行：pytest tests/ -v
+测试将查找相邻游戏根目录或 game_data。
+
+八、版权
+
+编辑器源码见项目仓库。游戏数据版权归原权利人所有。

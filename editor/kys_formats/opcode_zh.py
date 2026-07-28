@@ -81,6 +81,7 @@ OPCODE_ZH: dict[int, str] = {
     69: "重设名称",
     70: "显示标题",
     71: "跳转场景",
+    83: "扩展空操作(83)",
 }
 
 
@@ -107,9 +108,9 @@ OPCODE_ARGS: dict[int, List[ArgSpec]] = {
         ArgSpec("DData[2] 手动脚本", "jump"),
         ArgSpec("DData[3] 物品脚本", "jump"),
         ArgSpec("DData[4] 踩上脚本", "jump"),
-        ArgSpec("DData[5] 贴图", "int"),
-        ArgSpec("DData[6]", "int"),
-        ArgSpec("DData[7]", "int"),
+        ArgSpec("DData[5] 贴图当前(偶数代码, /2=smp)", "pic"),
+        ArgSpec("DData[6] 贴图结束", "pic"),
+        ArgSpec("DData[7] 贴图起始", "pic"),
         ArgSpec("DData[8]", "int"),
         ArgSpec("DData[9] 坐标Y", "int"),
         ArgSpec("DData[10] 坐标X", "int"),
@@ -238,6 +239,7 @@ OPCODE_ARGS: dict[int, List[ArgSpec]] = {
     69: [ArgSpec("类型", "int"), ArgSpec("目标ID", "int"), ArgSpec("新名称条目", "name")],
     70: [ArgSpec("标题对话ID?", "talk"), ArgSpec("参数", "int")],
     71: [ArgSpec("场景号", "scene"), ArgSpec("X", "int"), ArgSpec("Y", "int")],
+    83: [],
 }
 
 
@@ -339,7 +341,10 @@ def resolve_arg_value(ctx, kind: str, value: int) -> str:
         if kind == "head":
             return f"头像帧 #{value}（Heads.Pic）"
         if kind == "jump":
-            return f"脚本内跳转偏移 {value}（相对字数，引擎按真/假分支使用）"
+            return (
+                f"相对跳过 {value} 个「字」(int16)，"
+                f"从本指令结束后的下一条起始处再偏移（不是地图坐标，也不是跳过 N 条指令）"
+            )
         if kind == "face":
             faces = {0: "左", 1: "上", 2: "右", 3: "下"}
             return f"面向 {faces.get(value, value)}"
@@ -347,6 +352,14 @@ def resolve_arg_value(ctx, kind: str, value: int) -> str:
             return {0: "阴性", 1: "阳性", 2: "调和"}.get(value, str(value))
         if kind == "flag":
             return "是/开" if value else "否/关"
+        if kind == "pic":
+            if value == -2:
+                return "保持原值(-2)"
+            if value == 0:
+                return "清除贴图(0)"
+            from kys_formats.rle_tile import format_pic_code
+
+            return format_pic_code(value)
     except Exception as e:
         return f"(解析失败: {e})"
     return str(value)
@@ -380,6 +393,14 @@ def format_args_tooltip(ctx, opcode: int, args: Sequence[int]) -> str:
             lines.append(f"  [{i}] {spec.name} = {val}")
     if len(args) > len(specs):
         lines.append("多余参数: " + ",".join(str(a) for a in args[len(specs) :]))
+    if opcode == 6 and len(args) >= 3:
+        win, lose = args[1], args[2]
+        # Battle occupies 5 words; after it IP is at next instr. Then +win/+lose words.
+        lines.append("")
+        lines.append("跳转落点（相对本指令之后）:")
+        lines.append(f"  胜利: 再跳过 {win} 字 → 常用于跳过紧随其后的「游戏失败」")
+        lines.append(f"  失败: 再跳过 {lose} 字 → 0 表示直接执行下一条（多为游戏失败）")
+        lines.append("  典型写法: 战斗(…, 3, 0, …) / 游戏失败 / …胜利剧情…")
     return "\n".join(lines)
 
 

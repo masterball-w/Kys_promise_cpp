@@ -172,9 +172,9 @@ class BattleEditorWidget(QWidget):
         self.grid.on_changed = self._grid_to_record
         right.addWidget(self.grid)
         self.mate_ids = QLineEdit()
-        self.mate_ids.setPlaceholderText("我方 Role ID，逗号分隔（最多12）")
+        self.mate_ids.setPlaceholderText("我方 Role ID，逗号分隔")
         self.enemy_ids = QLineEdit()
-        self.enemy_ids.setPlaceholderText("敌人 Role ID，逗号分隔（最多30）")
+        self.enemy_ids.setPlaceholderText("敌人 Role ID，逗号分隔")
         right.addWidget(QLabel("我方角色 ID"))
         right.addWidget(self.mate_ids)
         right.addWidget(QLabel("敌人角色 ID"))
@@ -203,13 +203,17 @@ class BattleEditorWidget(QWidget):
             self.reward_table.setItem(i, 1, QTableWidgetItem(str(r.get_items(i))))
         mates = []
         mate_ids = []
-        for i in range(12):
-            if r.mate(i) >= 0:
+        lay = r.layout
+        for i in range(lay.mate_count):
+            mid = r.mate(i)
+            if mid < 0 and lay.auto_mate_off >= 0:
+                mid = r.auto_mate(i)
+            if mid >= 0:
                 mates.append((r.mate_x(i), r.mate_y(i)))
-                mate_ids.append(str(r.mate(i)))
+                mate_ids.append(str(mid))
         enemies = []
         enemy_ids = []
-        for i in range(30):
+        for i in range(lay.enemy_count):
             if r.enemy(i) >= 0:
                 enemies.append((r.enemy_x(i), r.enemy_y(i)))
                 enemy_ids.append(str(r.enemy(i)))
@@ -243,12 +247,15 @@ class BattleEditorWidget(QWidget):
         if not war:
             return
         r = war.records[self.current_index]
+        lay = r.layout
         mates = [int(x) for x in self.mate_ids.text().split(",") if x.strip() != ""]
         enemies = [int(x) for x in self.enemy_ids.text().split(",") if x.strip() != ""]
-        for i in range(12):
+        for i in range(lay.mate_count):
             r.set_mate(i, mates[i] if i < len(mates) else -1)
-            r.set_auto_mate(i, -1)
-        for i in range(30):
+        if lay.auto_mate_off >= 0:
+            for i in range(lay.auto_mate_count):
+                r.set_auto_mate(i, -1)
+        for i in range(lay.enemy_count):
             r.set_enemy(i, enemies[i] if i < len(enemies) else -1)
 
     def _grid_to_record(self) -> None:
@@ -256,7 +263,8 @@ class BattleEditorWidget(QWidget):
         if not war:
             return
         r = war.records[self.current_index]
-        for i in range(12):
+        lay = r.layout
+        for i in range(lay.mate_count):
             if i < len(self.grid.mates):
                 x, y = self.grid.mates[i]
                 r.set_mate_x(i, x)
@@ -264,7 +272,7 @@ class BattleEditorWidget(QWidget):
             else:
                 r.set_mate_x(i, 0)
                 r.set_mate_y(i, 0)
-        for i in range(30):
+        for i in range(lay.enemy_count):
             if i < len(self.grid.enemies):
                 x, y = self.grid.enemies[i]
                 r.set_enemy_x(i, x)
@@ -285,7 +293,7 @@ class BattleEditorWidget(QWidget):
         if not self.ctx.war:
             return
         r = self.ctx.war.records[self.current_index]
-        for i in range(30):
+        for i in range(r.layout.enemy_count):
             r.set_enemy(i, -1)
         self._load_edit()
 
@@ -310,6 +318,8 @@ class BattleEditorWidget(QWidget):
         )
 
     def _build_field_tab(self) -> None:
+        from ui.map_view import MapOverviewPanel
+
         w = QWidget()
         lay = QVBoxLayout(w)
         top = QHBoxLayout()
@@ -320,7 +330,7 @@ class BattleEditorWidget(QWidget):
         top.addWidget(self.field_spin)
         top.addWidget(QLabel("层"))
         self.layer_spin = QSpinBox()
-        self.layer_spin.setRange(0, 1)
+        self.layer_spin.setRange(0, 2)
         self.layer_spin.valueChanged.connect(self._load_field)
         top.addWidget(self.layer_spin)
         save = QPushButton("保存 warfld")
@@ -328,17 +338,89 @@ class BattleEditorWidget(QWidget):
         top.addWidget(save)
         top.addStretch()
         lay.addLayout(top)
+        hint = QLabel(
+            "俯视图按 wmp 砖主色铺底。调整模式点击写入笔刷值；悬停显示真实战斗贴图块。"
+        )
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        split = QSplitter(Qt.Horizontal)
+        self.field_overview = MapOverviewPanel("战斗俯视图")
+        self.field_overview.chk_events.setVisible(False)
+        self.field_overview.cellSelected.connect(self._on_field_overview_select)
+        self.field_overview.cellEdited.connect(self._on_field_overview_edit)
+        split.addWidget(self.field_overview)
+
         self.field_table = QTableWidget(64, 64)
         self.field_table.horizontalHeader().setDefaultSectionSize(28)
         self.field_table.verticalHeader().setDefaultSectionSize(18)
         self.field_table.cellChanged.connect(self._field_cell_changed)
-        lay.addWidget(self.field_table)
+        self.field_table.cellClicked.connect(self._on_field_table_click)
+        split.addWidget(self.field_table)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        lay.addWidget(split)
         self.tabs.addTab(w, "战场地形")
 
     def _refresh_field_spin(self) -> None:
         if self.ctx.warfld:
             self.field_spin.setMaximum(max(0, self.ctx.warfld.count - 1))
+            # layer max from selected field
             self._load_field()
+
+    def _bind_field_overview(self) -> None:
+        fld = self.ctx.warfld
+        if not fld:
+            return
+        fi = self.field_spin.value()
+        layer = self.layer_spin.value()
+        if fi >= fld.count:
+            return
+        nlayers = len(fld.fields[fi]) if fi < len(fld.fields) else 1
+        self.layer_spin.setMaximum(max(0, nlayers - 1))
+        if layer >= nlayers:
+            layer = 0
+            self.layer_spin.blockSignals(True)
+            self.layer_spin.setValue(0)
+            self.layer_spin.blockSignals(False)
+
+        def get_code(x: int, y: int) -> int:
+            return fld.get(fi, layer, x, y)
+
+        def set_code(x: int, y: int, v: int) -> None:
+            fld.set(fi, layer, x, y, v)
+
+        # ground preview prefers layer 0 if available
+        def ground(x: int, y: int) -> int:
+            return fld.get(fi, 0, x, y)
+
+        self.field_overview.bind(
+            64,
+            64,
+            get_code,
+            set_code,
+            ground_code=ground,
+            event_code=None,
+            tile_pack=self.ctx.battle_tiles,
+            palette=self.ctx.palette,
+        )
+
+    def _on_field_overview_select(self, x: int, y: int) -> None:
+        self.field_table.setCurrentCell(x, y)
+        item = self.field_table.item(x, y)
+        if item:
+            try:
+                self.field_overview.sp_brush.setValue(int(item.text()))
+            except ValueError:
+                pass
+
+    def _on_field_overview_edit(self, x: int, y: int, value: int) -> None:
+        self.field_table.blockSignals(True)
+        self.field_table.setItem(x, y, QTableWidgetItem(str(value)))
+        self.field_table.blockSignals(False)
+
+    def _on_field_table_click(self, row: int, col: int) -> None:
+        self.field_overview.select_cell(row, col)
 
     def _load_field(self) -> None:
         fld = self.ctx.warfld
@@ -348,11 +430,15 @@ class BattleEditorWidget(QWidget):
         layer = self.layer_spin.value()
         if fi >= fld.count:
             return
+        nlayers = len(fld.fields[fi]) if fi < len(fld.fields) else 1
+        if layer >= nlayers:
+            layer = 0
         self.field_table.blockSignals(True)
         for x in range(64):
             for y in range(64):
                 self.field_table.setItem(x, y, QTableWidgetItem(str(fld.get(fi, layer, x, y))))
         self.field_table.blockSignals(False)
+        self._bind_field_overview()
 
     def _field_cell_changed(self, row: int, col: int) -> None:
         if not self.ctx.warfld:
@@ -364,6 +450,7 @@ class BattleEditorWidget(QWidget):
             self.ctx.warfld.set(
                 self.field_spin.value(), self.layer_spin.value(), row, col, int(item.text())
             )
+            self.field_overview.rebuild()
         except ValueError:
             pass
 

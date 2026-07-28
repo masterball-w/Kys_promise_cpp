@@ -398,13 +398,13 @@ class RoleEditorPanel(QWidget):
             self._refresh_head()
 
     def _refresh_head(self) -> None:
-        pic = self.ctx.heads
+        bank = self.ctx.heads
         head = self.sp_head.value()
-        if not pic or head < 0 or head >= pic.count:
+        if bank is None or head < 0 or head >= bank.count:
             self.head_preview.setText("无图")
             return
         try:
-            img = pic.frames[head].to_image()
+            img = bank.get_image(head)
             if img is None:
                 self.head_preview.setText("空帧")
                 return

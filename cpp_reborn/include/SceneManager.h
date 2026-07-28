@@ -63,6 +63,13 @@ public:
     
     // 刷新事件层 (根据 DData 同步 SData 的 Layer 3)
     void RefreshEventLayer(int sceneId);
+
+    /// Pascal InitialScene: reset DData[5]:=DData[7], sync SData layer 3.
+    /// (No SceneImg bake — C++ redraws from DData/SData each frame.)
+    void InitialScene();
+
+    /// Pascal UpdateScene — C++ 每帧重绘 SceneImg 缓存未使用，保留调用点以对齐 instruct_3 时序
+    void UpdateSceneGraphic(int mapX, int mapY, int oldPic, int newPic);
     
     // 加载资源 (贴图等)
     bool LoadResources();

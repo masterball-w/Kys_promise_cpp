@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QListWidget, QListWidgetItem,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QSpinBox, QComboBox,
     QTextEdit, QFormLayout, QMessageBox, QSplitter, QHeaderView, QLineEdit,
-    QAbstractItemView, QCompleter,
+    QAbstractItemView, QCompleter, QCheckBox,
 )
 
 from kys_formats.kdef import OPCODE_ARGC, Instruction, Script
@@ -20,7 +21,24 @@ from kys_formats.opcode_zh import (
     known_opcodes,
     default_args_for_opcode,
 )
+from kys_formats.rle_tile import code_to_tile_index, format_pic_code
 from ui.context import EditorContext
+from ui.id_combo import NamedIdCombo, collect_scene_options, rebuild_named_combos
+
+# DData word labels (Pascal DData[scene, event, 0..10])
+_DDATA_WORD_LABELS = [
+    "条件[0]",
+    "备用[1]",
+    "手动脚本[2]",
+    "物品脚本[3]",
+    "踩上脚本[4]",
+    "贴图当前[5]",
+    "贴图结束[6]",
+    "贴图起始[7]",
+    "备用[8]",
+    "Y[9]",
+    "X[10]",
+]
 
 
 class EventEditorWidget(QWidget):
@@ -37,6 +55,7 @@ class EventEditorWidget(QWidget):
         self._build_ddata_tab()
         self._build_sdata_tab()
         ctx.dataRootChanged.connect(lambda _: self.refresh())
+        ctx.encodingChanged.connect(lambda _: self.refresh())
 
     def refresh(self) -> None:
         self._refresh_script_list()
@@ -404,6 +423,12 @@ class EventEditorWidget(QWidget):
         left.addWidget(add)
         lay.addLayout(left, 1)
         right = QVBoxLayout()
+        enc_hint = QLabel(
+            "对话文本受工具栏「文本编码」影响；切换编码后列表会自动刷新。"
+            "打开其它同引擎游戏时若乱码，请尝试 Big5 或 GBK。"
+        )
+        enc_hint.setWordWrap(True)
+        right.addWidget(enc_hint)
         self.talk_edit = QTextEdit()
         right.addWidget(self.talk_edit)
         save = QPushButton("保存当前对话")
@@ -426,6 +451,8 @@ class EventEditorWidget(QWidget):
                 continue
             self._talk_ids.append(i)
             self.talk_list.addItem(f"{i}: {preview}")
+        if hasattr(self, "_current_talk_id") and self.ctx.talk:
+            self.talk_edit.setPlainText(self.ctx.talk.get_text(self._current_talk_id))
 
     def _load_talk(self, row: int) -> None:
         if row < 0 or row >= len(self._talk_ids) or not self.ctx.talk:
@@ -459,58 +486,210 @@ class EventEditorWidget(QWidget):
         lay = QVBoxLayout(w)
         top = QHBoxLayout()
         top.addWidget(QLabel("场景"))
-        self.scene_spin = QSpinBox()
-        self.scene_spin.setRange(0, 200)
-        self.scene_spin.valueChanged.connect(self._load_ddata)
-        top.addWidget(self.scene_spin)
+        self.scene_combo = NamedIdCombo("scene", allow_none=False, none_value=0)
+        self.scene_combo.setMinimumContentsLength(28)
+        self.scene_combo.idChanged.connect(self._load_ddata)
+        top.addWidget(self.scene_combo, 1)
+        self.ddata_only_used = QCheckBox("仅显示有内容")
+        self.ddata_only_used.setChecked(True)
+        self.ddata_only_used.setToolTip(
+            "隐藏「全 0 / 脚本全空且贴图为 0」的空事件，避免漏看已挂接 NPC（如开场孔霹雳 8268）"
+        )
+        self.ddata_only_used.toggled.connect(self._load_ddata)
+        top.addWidget(self.ddata_only_used)
         top.addStretch()
         save = QPushButton("保存 alldef.grp")
         save.clicked.connect(self._save_ddata)
         top.addWidget(save)
         lay.addLayout(top)
-        self.ddata_table = QTableWidget(0, 8)
-        self.ddata_table.setHorizontalHeaderLabels([
-            "事件", "条件[0]", "手动脚本[2]", "物品脚本[3]", "踩上脚本[4]",
-            "贴图[5]", "Y[9]", "X[10]",
-        ])
+
+        hint = QLabel(
+            "DData 共 11 个 int16。贴图存的是游戏代码（偶数，如 8268）；"
+            "引擎 DrawSPic(代码/2)，smp 帧号=代码/2（8268→4134）。"
+            "选中行右侧预览贴图当前[5]。"
+        )
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        split = QSplitter(Qt.Horizontal)
+        # columns: 事件 + 11 words + smp(=贴图[5]/2)
+        self.ddata_table = QTableWidget(0, 13)
+        headers = ["事件"] + _DDATA_WORD_LABELS + ["smp(=贴图[5]/2)"]
+        self.ddata_table.setHorizontalHeaderLabels(headers)
+        self.ddata_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.ddata_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.ddata_table.cellChanged.connect(self._ddata_changed)
-        lay.addWidget(self.ddata_table)
+        self.ddata_table.currentCellChanged.connect(self._on_ddata_row_selected)
+        split.addWidget(self.ddata_table)
+
+        side = QWidget()
+        side_lay = QVBoxLayout(side)
+        self.ddata_info = QLabel("选中事件查看贴图")
+        self.ddata_info.setWordWrap(True)
+        side_lay.addWidget(self.ddata_info)
+        self.ddata_preview = QLabel("贴图预览")
+        self.ddata_preview.setFixedSize(160, 160)
+        self.ddata_preview.setAlignment(Qt.AlignCenter)
+        self.ddata_preview.setStyleSheet("background:#111;color:#888;border:1px solid #333;")
+        side_lay.addWidget(self.ddata_preview)
+        side_lay.addStretch()
+        split.addWidget(side)
+        split.setStretchFactor(0, 4)
+        split.setStretchFactor(1, 1)
+        lay.addWidget(split)
         self.tabs.addTab(w, "场景事件挂接")
 
     def _refresh_ddata_scenes(self) -> None:
-        if self.ctx.events:
-            self.scene_spin.setMaximum(max(0, self.ctx.events.scene_count - 1))
-            self._load_ddata()
+        if not self.ctx.events:
+            return
+        self.scene_combo.max_count = self.ctx.events.scene_count
+        self.scene_combo.rebuild(
+            collect_scene_options(self.ctx, max_count=self.ctx.events.scene_count)
+        )
+        if self.scene_combo.get_id(silent=True) >= self.ctx.events.scene_count:
+            self.scene_combo.set_id(0)
+        self._load_ddata()
+
+    @staticmethod
+    def _event_has_content(ev: list) -> bool:
+        """True if event is worth listing (scripts, pics, or non-default coords)."""
+        if any(int(ev[i]) > 0 for i in (2, 3, 4)):
+            return True
+        if int(ev[5]) != 0 or int(ev[6]) != 0 or int(ev[7]) != 0:
+            return True
+        # keep rows that still occupy a map cell with a condition flag
+        if int(ev[0]) != 0 and (int(ev[9]) != 0 or int(ev[10]) != 0):
+            return True
+        return False
 
     def _load_ddata(self) -> None:
         if not self.ctx.events:
             return
-        scene = self.scene_spin.value()
+        scene = self.scene_combo.get_id(silent=True)
         if scene >= self.ctx.events.scene_count:
             return
-        self.ddata_table.blockSignals(True)
-        self.ddata_table.setRowCount(200)
+        only = self.ddata_only_used.isChecked() if hasattr(self, "ddata_only_used") else False
+        rows: list[int] = []
         for e in range(200):
             ev = self.ctx.events.scenes[scene][e]
-            vals = [e, ev[0], ev[2], ev[3], ev[4], ev[5], ev[9], ev[10]]
+            if only and not self._event_has_content(ev):
+                continue
+            rows.append(e)
+
+        self.ddata_table.blockSignals(True)
+        self.ddata_table.setRowCount(len(rows))
+        self._ddata_row_to_event = rows
+        for r, e in enumerate(rows):
+            ev = self.ctx.events.scenes[scene][e]
+            vals = [e] + [int(ev[i]) for i in range(11)]
+            pic = int(ev[5])
+            smp = code_to_tile_index(pic) if pic != 0 else -1
+            vals.append(smp if smp >= 0 else "")
             for c, v in enumerate(vals):
-                self.ddata_table.setItem(e, c, QTableWidgetItem(str(v)))
+                item = QTableWidgetItem(str(v))
+                if c == 0 or c == 12:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.ddata_table.setItem(r, c, item)
+            # tooltips on pic columns (table cols 6,7,8 → words 5,6,7)
+            for word, col in ((5, 6), (6, 7), (7, 8)):
+                it = self.ddata_table.item(r, col)
+                if it and int(ev[word]) != 0:
+                    it.setToolTip(format_pic_code(int(ev[word])))
         self.ddata_table.blockSignals(False)
+        if rows:
+            self.ddata_table.selectRow(0)
+            self._preview_ddata_event(rows[0])
+
+    def _ddata_event_id_at_row(self, row: int) -> int | None:
+        mapping = getattr(self, "_ddata_row_to_event", None)
+        if mapping is None:
+            return row if 0 <= row < 200 else None
+        if 0 <= row < len(mapping):
+            return mapping[row]
+        return None
 
     def _ddata_changed(self, row: int, col: int) -> None:
-        if not self.ctx.events or col == 0:
+        if not self.ctx.events or col == 0 or col == 12:
             return
         item = self.ddata_table.item(row, col)
         if not item:
             return
-        word_map = {1: 0, 2: 2, 3: 3, 4: 4, 5: 5, 6: 9, 7: 10}
-        w = word_map.get(col)
-        if w is None:
+        # table cols 1..11 → DData words 0..10
+        word = col - 1
+        if word < 0 or word > 10:
+            return
+        eid = self._ddata_event_id_at_row(row)
+        if eid is None:
             return
         try:
-            self.ctx.events.set(self.scene_spin.value(), row, w, int(item.text()))
+            value = int(item.text())
         except ValueError:
-            pass
+            return
+        scene = self.scene_combo.get_id(silent=True)
+        self.ctx.events.set(scene, eid, word, value)
+        if word == 5:
+            # refresh derived smp column
+            smp = code_to_tile_index(value) if value != 0 else -1
+            self.ddata_table.blockSignals(True)
+            self.ddata_table.setItem(
+                row, 12, QTableWidgetItem("" if smp < 0 else str(smp))
+            )
+            self.ddata_table.item(row, 12).setFlags(
+                self.ddata_table.item(row, 12).flags() & ~Qt.ItemIsEditable
+            )
+            item.setToolTip(format_pic_code(value) if value != 0 else "")
+            self.ddata_table.blockSignals(False)
+            self._preview_ddata_event(eid)
+
+    def _on_ddata_row_selected(self, row: int, _col: int, _prev_row: int, _prev_col: int) -> None:
+        eid = self._ddata_event_id_at_row(row)
+        if eid is not None:
+            self._preview_ddata_event(eid)
+
+    def _preview_ddata_event(self, event_id: int) -> None:
+        if not self.ctx.events:
+            return
+        scene = self.scene_combo.get_id(silent=True)
+        if scene >= self.ctx.events.scene_count or event_id < 0 or event_id >= 200:
+            return
+        ev = self.ctx.events.scenes[scene][event_id]
+        pic = int(ev[5])
+        smp = code_to_tile_index(pic) if pic != 0 else -1
+        lines = [
+            f"场景 {scene} 事件 {event_id}",
+            f"坐标 Y={ev[9]} X={ev[10]}",
+            f"条件={ev[0]} 脚本 手={ev[2]} 物={ev[3]} 踩={ev[4]}",
+            f"贴图[5/6/7]={ev[5]}/{ev[6]}/{ev[7]}",
+        ]
+        if pic != 0:
+            lines.append(format_pic_code(pic))
+        self.ddata_info.setText("\n".join(lines))
+
+        self.ddata_preview.setPixmap(QPixmap())
+        if pic == 0 or smp < 0:
+            self.ddata_preview.setText("无贴图")
+            return
+        if pic < 0:
+            self.ddata_preview.setText(f"负贴图\n(mmap/ScenePic)\n{format_pic_code(pic)}")
+            return
+        pack = self.ctx.scene_tiles
+        pal = self.ctx.palette
+        if not pack or not pal:
+            self.ddata_preview.setText(f"smp[{smp}]\n(未加载 sdx/smp)")
+            return
+        try:
+            img = pack.decode_tile(smp, pal)
+        except Exception as e:
+            self.ddata_preview.setText(str(e))
+            return
+        if img is None:
+            self.ddata_preview.setText(f"smp[{smp}]\n无法解码")
+            return
+        data = img.convert("RGBA").tobytes("raw", "RGBA")
+        qimg = QImage(data, img.width, img.height, QImage.Format_RGBA8888).copy()
+        self.ddata_preview.setPixmap(
+            QPixmap.fromImage(qimg).scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        )
 
     def _save_ddata(self) -> None:
         if not self.ctx.events:
@@ -523,15 +702,17 @@ class EventEditorWidget(QWidget):
 
     # ----- SData layer 3 (event ids on map) -----
     def _build_sdata_tab(self) -> None:
+        from ui.map_view import MapOverviewPanel
+
         w = QWidget()
         lay = QVBoxLayout(w)
         top = QHBoxLayout()
         top.addWidget(QLabel("场景"))
-        self.sdata_scene = QSpinBox()
-        self.sdata_scene.setRange(0, 200)
-        self.sdata_scene.valueChanged.connect(self._load_sdata)
-        top.addWidget(self.sdata_scene)
-        top.addWidget(QLabel("层(事件层=3)"))
+        self.sdata_scene_combo = NamedIdCombo("scene", allow_none=False, none_value=0)
+        self.sdata_scene_combo.setMinimumContentsLength(28)
+        self.sdata_scene_combo.idChanged.connect(self._load_sdata)
+        top.addWidget(self.sdata_scene_combo, 1)
+        top.addWidget(QLabel("编辑层(事件=3)"))
         self.sdata_layer = QSpinBox()
         self.sdata_layer.setRange(0, 5)
         self.sdata_layer.setValue(3)
@@ -545,26 +726,105 @@ class EventEditorWidget(QWidget):
         top.addWidget(jump)
         top.addStretch()
         lay.addLayout(top)
-        hint = QLabel("层 3 存事件号；双击或点下方按钮跳到对应 DData 行。")
+        hint = QLabel(
+            "俯视图用层0地面贴图主色铺底，红色半透明为事件格。"
+            "调整模式写入「编辑层」当前值；悬停/点击右侧显示真实砖块。"
+        )
+        hint.setWordWrap(True)
         lay.addWidget(hint)
+
+        split = QSplitter(Qt.Horizontal)
+        self.sdata_overview = MapOverviewPanel("场景俯视图")
+        self.sdata_overview.cellSelected.connect(self._on_sdata_overview_select)
+        self.sdata_overview.cellEdited.connect(self._on_sdata_overview_edit)
+        split.addWidget(self.sdata_overview)
+
         self.sdata_table = QTableWidget(64, 64)
         self.sdata_table.horizontalHeader().setDefaultSectionSize(28)
         self.sdata_table.verticalHeader().setDefaultSectionSize(18)
         self.sdata_table.cellChanged.connect(self._sdata_changed)
         self.sdata_table.cellDoubleClicked.connect(lambda *_: self._jump_sdata_to_ddata())
-        lay.addWidget(self.sdata_table)
+        self.sdata_table.cellClicked.connect(self._on_sdata_table_click)
+        split.addWidget(self.sdata_table)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        lay.addWidget(split)
         self.tabs.addTab(w, "SData 事件层")
 
+    def _bind_sdata_overview(self) -> None:
+        maps = self.ctx.maps
+        if not maps:
+            return
+        scene = self.sdata_scene_combo.get_id(silent=True)
+        if scene >= maps.scene_count:
+            return
+        layer = self.sdata_layer.value()
+
+        def get_code(x: int, y: int) -> int:
+            return maps.get(scene, layer, x, y)
+
+        def set_code(x: int, y: int, v: int) -> None:
+            maps.set(scene, layer, x, y, v)
+
+        def ground(x: int, y: int) -> int:
+            return maps.get(scene, 0, x, y)
+
+        def event(x: int, y: int) -> int:
+            return maps.get(scene, 3, x, y)
+
+        def event_pic(x: int, y: int) -> int:
+            if not self.ctx.events or scene >= self.ctx.events.scene_count:
+                return 0
+            eid = maps.get(scene, 3, x, y)
+            if eid < 0 or eid >= 200:
+                return 0
+            return int(self.ctx.events.scenes[scene][eid][5])
+
+        self.sdata_overview.bind(
+            64,
+            64,
+            get_code,
+            set_code,
+            ground_code=ground,
+            event_code=event,
+            event_pic_code=event_pic,
+            tile_pack=self.ctx.scene_tiles,
+            palette=self.ctx.palette,
+        )
+
+    def _on_sdata_overview_select(self, x: int, y: int) -> None:
+        self.sdata_table.setCurrentCell(x, y)
+        item = self.sdata_table.item(x, y)
+        if item:
+            try:
+                self.sdata_overview.sp_brush.setValue(int(item.text()))
+            except ValueError:
+                pass
+
+    def _on_sdata_overview_edit(self, x: int, y: int, value: int) -> None:
+        self.sdata_table.blockSignals(True)
+        self.sdata_table.setItem(x, y, QTableWidgetItem(str(value)))
+        self.sdata_table.blockSignals(False)
+
+    def _on_sdata_table_click(self, row: int, col: int) -> None:
+        self.sdata_overview.select_cell(row, col)
+
     def _refresh_sdata(self) -> None:
-        if self.ctx.maps:
-            self.sdata_scene.setMaximum(max(0, self.ctx.maps.scene_count - 1))
-            self._load_sdata()
+        if not self.ctx.maps:
+            return
+        self.sdata_scene_combo.max_count = self.ctx.maps.scene_count
+        self.sdata_scene_combo.rebuild(
+            collect_scene_options(self.ctx, max_count=self.ctx.maps.scene_count)
+        )
+        if self.sdata_scene_combo.get_id(silent=True) >= self.ctx.maps.scene_count:
+            self.sdata_scene_combo.set_id(0)
+        self._load_sdata()
 
     def _load_sdata(self) -> None:
         maps = self.ctx.maps
         if not maps:
             return
-        scene = self.sdata_scene.value()
+        scene = self.sdata_scene_combo.get_id(silent=True)
         layer = self.sdata_layer.value()
         if scene >= maps.scene_count:
             return
@@ -573,6 +833,7 @@ class EventEditorWidget(QWidget):
             for y in range(64):
                 self.sdata_table.setItem(x, y, QTableWidgetItem(str(maps.get(scene, layer, x, y))))
         self.sdata_table.blockSignals(False)
+        self._bind_sdata_overview()
 
     def _sdata_changed(self, row: int, col: int) -> None:
         if not self.ctx.maps:
@@ -582,8 +843,13 @@ class EventEditorWidget(QWidget):
             return
         try:
             self.ctx.maps.set(
-                self.sdata_scene.value(), self.sdata_layer.value(), row, col, int(item.text())
+                self.sdata_scene_combo.get_id(silent=True),
+                self.sdata_layer.value(),
+                row,
+                col,
+                int(item.text()),
             )
+            self.sdata_overview.rebuild()
         except ValueError:
             pass
 
@@ -599,14 +865,37 @@ class EventEditorWidget(QWidget):
     def _jump_sdata_to_ddata(self) -> None:
         item = self.sdata_table.currentItem()
         if not item:
-            return
-        try:
-            eid = int(item.text())
-        except ValueError:
-            return
+            # try overview selection
+            sel = self.sdata_overview.canvas.selected
+            if sel is None or not self.ctx.maps:
+                return
+            eid = self.ctx.maps.get(
+                self.sdata_scene_combo.get_id(silent=True), 3, sel[0], sel[1]
+            )
+        else:
+            try:
+                eid = int(item.text())
+            except ValueError:
+                return
         if eid < 0:
             return
-        self.scene_spin.setValue(self.sdata_scene.value())
+        self.scene_combo.set_id(self.sdata_scene_combo.get_id(silent=True))
         self.tabs.setCurrentIndex(2)  # DData tab
-        self.ddata_table.selectRow(min(eid, 199))
-        self.ddata_table.scrollToItem(self.ddata_table.item(min(eid, 199), 0))
+        # Ensure the event is visible even if "only used" filter would hide empty pics
+        if hasattr(self, "ddata_only_used") and self.ddata_only_used.isChecked():
+            # force reload; event with map cell usually has content — if not, show all
+            self._load_ddata()
+        mapping = getattr(self, "_ddata_row_to_event", list(range(200)))
+        try:
+            row = mapping.index(eid)
+        except ValueError:
+            self.ddata_only_used.setChecked(False)
+            self._load_ddata()
+            mapping = self._ddata_row_to_event
+            try:
+                row = mapping.index(eid)
+            except ValueError:
+                return
+        self.ddata_table.selectRow(row)
+        self.ddata_table.scrollToItem(self.ddata_table.item(row, 0))
+        self._preview_ddata_event(eid)

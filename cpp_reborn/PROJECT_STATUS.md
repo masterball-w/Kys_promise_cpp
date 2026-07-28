@@ -1,16 +1,17 @@
 # KYS C++ Refactoring Project Status
 
-**Last Updated:** 2026-07-21  
+**Last Updated:** 2026-07-28  
 **Status:** Alpha ~0.7 / Core Loop + Shop + Little Games + Gongti 26–28 + Dual-build scaffolding  
 **详细对齐清单:** [doc/PROGRESS.md](doc/PROGRESS.md)（以 Pascal 函数为单元）  
 **待办与开发计划:** [TODO_LIST.md](TODO_LIST.md)  
+**开场/脚本101回归:** [doc/REGRESSION_SCRIPT_101.md](doc/REGRESSION_SCRIPT_101.md)  
 **Android:** [../ANDROID.md](../ANDROID.md)  
 **构建约定:** 源码 `cpp_reborn/` → 唯一产物目录仓库根 `build/`（见根目录 `CMakePresets.json` / `README.md`）
 
 ## 1. Completed Systems
 
 ### Core Architecture
-- **GameManager**: Central singleton managing global state, main loop, and cross-system coordination.
+- **GameManager**: Central singleton managing global state, main loop, and cross-system coordination. **`SaveGame(0)` 不再覆盖新游戏模板 `alldef`/`allsin`**（2026-07-28）。
 - **GameObject**: Base class ensuring binary compatibility with original Pascal data files (`.grp`/`.idx`).
 - **FileLoader**: Robust loading/saving; data root via `PlatformCompat` (`game_data` / Android paths).
 - **Data Structures**: `Role`, `Item`, `Magic`, `Scene` classes fully mapped to original memory layouts.
@@ -18,12 +19,13 @@
 - **PlatformCompat / VirtualControls**: Android BACK mapping; on-screen D-pad + Esc; dual-path Present overlay.
 
 ### Graphics & Rendering (SDL3)
-- **GraphicsUtils**: Encapsulates SDL3 rendering primitives.
+- **GraphicsUtils**: Encapsulates SDL3 rendering primitives；`DrawRLE8` 热点对齐 Pascal（`xs/ys+1`）。
 - **PicLoader**: Decodes legacy `.pic` resource format (RLE/LZW compressed images).
 - **SceneManager**:
     - Isometric map rendering (`DrawScene` / world map).
+    - **`InitialScene`**：保留 `allsin` 层3；`DData[5]:=DData[7]`；层空才重建。
     - Dynamic sprite rendering with correct depth sorting.
-    - Cloud/Weather effects (`DrawClouds`) — atmosphere SetScene incomplete.
+    - Cloud/Weather effects (`DrawClouds`) — atmosphere SetScene incomplete；**场景漫游不画云**。
     - Palette-based color handling.
     - SMP / MMAP sprite systems split to avoid index collisions.
 
@@ -37,14 +39,14 @@
 
 ### Game Flow
 - **Startup**: Title Screen → Character Creation → Game Loop.
-- **Character Creation**: Name input + reroll; start at Scene 0 `(38,38)` (see `InitNewGame`). Difficulty menu (`MenuDifficult`) not ported.
+- **Character Creation**: Name input + reroll; `InitNewGame` 强制重载模板 `alldef`/`allsin` 后进场景 0（权威数据：事件0=`8284`，孔霹雳事件1=`8268` 在卧室旁）。
 - **Roaming**: Tile movement, collision, event triggering, enter/leave scenes; `ShowSceneName` present; `ShowMap` missing.
-- **Save/Load**: Backend for `R/S/D/G*.grp`; title load UI; in-game system menu save/load.
+- **Save/Load**: Backend for `R/S/D/G*.grp`；**slot0 仅写 ranger，保护 alldef/allsin 模板**；title load UI; in-game system menu save/load.
 
 ### UI System
 - **Text**: Win MultiByte + non-Win `SDL_iconv`; GBK-prefer talk; shadow text.
 - **Menus**: Title / character creation / dialogue; ESC ring; status; inventory; magic; system; **Shop**.
-- **Editor (decoupled)**: `editor/` PySide6 — ranger/events/battle/assets; role/item/magic detail forms.
+- **Editor (decoupled)**: `editor/` PySide6 — ranger/events/battle/assets; 开场字段单测 `test_alldef_scene0_opening_pics`。
 
 ### Battle System (Alpha+)
 - **BattleManager**: Turn loop; manual menu; items/medicine/poison paths; basic AI; `.eft` basic playback.

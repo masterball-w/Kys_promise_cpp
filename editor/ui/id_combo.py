@@ -1,4 +1,4 @@
-"""Editable combo for resource IDs with Chinese name labels (magic / item / role)."""
+"""Editable combo for resource IDs with Chinese name labels (magic / item / role / scene)."""
 
 from __future__ import annotations
 
@@ -40,11 +40,12 @@ class NamedIdCombo(QComboBox):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        if kind not in ("magic", "item", "role"):
+        if kind not in ("magic", "item", "role", "scene"):
             raise ValueError(kind)
         self.kind = kind
         self.allow_none = allow_none
         self.none_value = none_value
+        self.max_count: Optional[int] = None
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.NoInsert)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -141,8 +142,18 @@ def collect_role_options(ctx) -> List[Tuple[int, str]]:
     return [(i, arc.role_name(i)) for i in range(arc.roles.count)]
 
 
+def collect_scene_options(ctx, max_count: Optional[int] = None) -> List[Tuple[int, str]]:
+    arc = getattr(ctx, "template_ranger", None) or getattr(ctx, "ranger", None)
+    if not arc:
+        return []
+    count = arc.scenes.count
+    if max_count is not None:
+        count = min(count, max_count)
+    return [(i, arc.scene_name(i)) for i in range(max(0, count))]
+
+
 def rebuild_named_combos(combos: List[NamedIdCombo], ctx) -> None:
-    magic_opts = item_opts = role_opts = None
+    magic_opts = item_opts = role_opts = scene_opts = None
     for cb in combos:
         if cb.kind == "magic":
             if magic_opts is None:
@@ -156,3 +167,7 @@ def rebuild_named_combos(combos: List[NamedIdCombo], ctx) -> None:
             if role_opts is None:
                 role_opts = collect_role_options(ctx)
             cb.rebuild(role_opts)
+        elif cb.kind == "scene":
+            if scene_opts is None:
+                scene_opts = collect_scene_options(ctx, max_count=cb.max_count)
+            cb.rebuild(scene_opts)

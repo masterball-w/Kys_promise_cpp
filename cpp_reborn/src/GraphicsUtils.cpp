@@ -160,8 +160,9 @@ void GraphicsUtils::DrawRLE8(SDL_Surface* dest, int x, int y, const uint8_t* raw
     
     int16_t w = ptr[0] | (ptr[1] << 8); ptr += 2;
     int16_t h = ptr[0] | (ptr[1] << 8); ptr += 2;
-    int16_t xs = ptr[0] | (ptr[1] << 8); ptr += 2;
-    int16_t ys = ptr[0] | (ptr[1] << 8); ptr += 2;
+    // Pascal DrawRLE8Pic: xs/ys := header + 1
+    int16_t xs = (ptr[0] | (ptr[1] << 8)) + 1; ptr += 2;
+    int16_t ys = (ptr[0] | (ptr[1] << 8)) + 1; ptr += 2;
     
     int startX = x - (int)(xs * scale);
     int startY = y - (int)(ys * scale);

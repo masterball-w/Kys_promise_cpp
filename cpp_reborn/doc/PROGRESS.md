@@ -22,8 +22,8 @@
 | [x] | `Run` / `Quit` / `ReadFiles` | `GameManager::Init/Run/Quit` | |
 | [x] | `Start` + 标题三项 | `UpdateTitleScreen` / `DrawTitleMenu` | |
 | [x] | `PlayBeginningMovie` | `UIManager::PlayTitleAnimation` | |
-| [~] | `InitialRole` / `RandomAttribute` / 建角 | 建角状态 + 姓名输入 + 重随 | 难度 `MenuDifficult` 未见 |
-| [x] | `LoadR` / `SaveR` | `LoadGame` / `SaveGame` | DOS 互读需持续验证 |
+| [~] | `InitialRole` / `RandomAttribute` / 建角 | 建角 + `InitNewGame` 重载模板 | 难度菜单未见；开场强制重载 alldef/allsin |
+| [x] | `LoadR` / `SaveR` | `LoadGame` / `SaveGame` | slot0 **不**写回 `alldef`/`allsin` 模板（2026-07-28） |
 | [x] | `MenuLoadAtBeginning` | `ShowSaveLoadMenu(false)` | 已竖排对齐 CommonMenu |
 | [x] | `NewMenuSave` / `NewMenuLoad` | 系统菜单内横排存读 | |
 | [~] | `MenuSave`（旧竖排） | `ShowSaveLoadMenu(true)` 布局预留 | 标题侧基本不走存档 |
@@ -39,7 +39,7 @@
 | [x] | `CheckEntrance` / `ReSetEntrance` | `TryEnterScene` / `CheckWorldEntrance` | |
 | [x] | `WalkInScene` / `CanWalkInScene` | 场景漫游 | |
 | [x] | `CheckEvent3` | 场景事件触发 | |
-| [x] | `DrawMMap` / `DrawScene` / `InitialScene` | `SceneManager` | |
+| [x] | `DrawMMap` / `DrawScene` / `InitialScene` | `SceneManager` | InitialScene 保留层3；场景内不画云；开场见 REGRESSION_SCRIPT_101 |
 | [x] | `DrawClouds` / `CloudCreate*` | 云层 | |
 | [~] | `JmpScene` / `SetScene`（雾雨雪） | `Instruct_JmpScene`；天气 | `SetScene` 氛围未完整 |
 | [~] | `findway` / `Moveman` | `Instruct_25` / `Instruct_30` | |

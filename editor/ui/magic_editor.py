@@ -111,7 +111,7 @@ class MagicEditorPanel(QWidget):
         self.detail_lay.addWidget(basic)
 
         # Effect preview
-        prev = QGroupBox("特效预览 (eft/eftNNN.pic)")
+        prev = QGroupBox("特效预览 (AmiNum → eft)")
         pl = QHBoxLayout(prev)
         self.eft_preview = QLabel("无预览")
         self.eft_preview.setFixedSize(160, 160)
@@ -305,6 +305,9 @@ class MagicEditorPanel(QWidget):
             idx = cb.findData(value)
         cb.setCurrentIndex(max(0, idx))
 
+    def _word(self, rec: list, index: int, default: int = 0) -> int:
+        return rec[index] if 0 <= index < len(rec) else default
+
     def _load_magic(self, mid: int) -> None:
         arc = self.ctx.ranger
         if not arc or mid < 0 or mid >= arc.magics.count:
@@ -312,66 +315,76 @@ class MagicEditorPanel(QWidget):
         self._loading = True
         self._mid = mid
         rec = arc.magics.records[mid]
-        self.lbl_id.setText(f"ID: {mid}")
+        words = len(rec)
+        self.lbl_id.setText(f"ID: {mid}  (记录字宽 {words})")
         self.lbl_category.setText(f"类别: {category_display(rec)}")
 
         self.ed_name.setText(arc.magic_name(mid))
-        self._set_combo(self.cb_type, rec[12])
-        self._set_combo(self.cb_hurt, rec[14])
-        self.sp_ami.setValue(rec[13])
-        self.sp_need_mp.setValue(rec[16])
-        self.sp_need_hp.setValue(rec[7])
-        self.sp_sound.setValue(rec[11])
-        self.sp_event.setValue(rec[10])
-        self.sp_max_lv.setValue(rec[80])
-        self.sp_poison.setValue(rec[17])
+        self._set_combo(self.cb_type, self._word(rec, 12))
+        self._set_combo(self.cb_hurt, self._word(rec, 14))
+        self.sp_ami.setValue(self._word(rec, 13))
+        self.sp_need_mp.setValue(self._word(rec, 16))
+        self.sp_need_hp.setValue(self._word(rec, 7))
+        self.sp_sound.setValue(self._word(rec, 11))
+        self.sp_event.setValue(self._word(rec, 10))
+        self.sp_max_lv.setValue(self._word(rec, 80))
+        self.sp_poison.setValue(self._word(rec, 17))
 
-        self.sp_min_hurt.setValue(rec[18])
-        self.sp_max_hurt.setValue(rec[19])
-        self.sp_hurt_mod.setValue(rec[20])
+        self.sp_min_hurt.setValue(self._word(rec, 18))
+        self.sp_max_hurt.setValue(self._word(rec, 19))
+        self.sp_hurt_mod.setValue(self._word(rec, 20))
         self._update_power_labels()
 
-        self.sp_mod_att.setValue(rec[21])
-        self.sp_mod_mp.setValue(rec[22])
-        self.sp_mod_spd.setValue(rec[23])
-        self.sp_mod_wpn.setValue(rec[24])
+        self.sp_mod_att.setValue(self._word(rec, 21))
+        self.sp_mod_mp.setValue(self._word(rec, 22))
+        self.sp_mod_spd.setValue(self._word(rec, 23))
+        self.sp_mod_wpn.setValue(self._word(rec, 24))
         self._update_mod_label()
 
-        self._set_combo(self.cb_area, rec[15])
-        self.sp_min_step.setValue(rec[8])
-        self.sp_move1.setValue(rec[28])
-        self.sp_move10.setValue(rec[37])
-        self.sp_att1.setValue(rec[38])
-        self.sp_att10.setValue(rec[47])
+        self._set_combo(self.cb_area, self._word(rec, 15))
+        self.sp_min_step.setValue(self._word(rec, 8))
+        self.sp_move1.setValue(self._word(rec, 28))
+        self.sp_move10.setValue(self._word(rec, 37))
+        self.sp_att1.setValue(self._word(rec, 38))
+        self.sp_att10.setValue(self._word(rec, 47))
 
-        self.sp_mp_scale.setValue(rec[26])
-        self.sp_hp_scale.setValue(rec[27])
+        self.sp_mp_scale.setValue(self._word(rec, 26))
+        self.sp_hp_scale.setValue(self._word(rec, 27))
 
-        self._set_combo(self.cb_battle, rec[76])
-        self.sp_need_exp0.setValue(rec[77])
-        self.sp_need_exp1.setValue(rec[78])
-        self.sp_need_exp2.setValue(rec[79])
+        self._set_combo(self.cb_battle, self._word(rec, 76))
+        self.sp_need_exp0.setValue(self._word(rec, 77))
+        self.sp_need_exp1.setValue(self._word(rec, 78))
+        self.sp_need_exp2.setValue(self._word(rec, 79))
         for i in range(3):
-            self.sp_add_hp[i].setValue(rec[48 + i])
-            self.sp_add_mp[i].setValue(rec[51 + i])
-            self.sp_add_att[i].setValue(rec[54 + i])
-            self.sp_add_def[i].setValue(rec[57 + i])
-            self.sp_add_spd[i].setValue(rec[60 + i])
-        self.sp_add_med.setValue(rec[67])
-        self.sp_add_usepoi.setValue(rec[68])
-        self.sp_add_medpoi.setValue(rec[69])
-        self.sp_add_defpoi.setValue(rec[70])
-        self.sp_add_fist.setValue(rec[71])
-        self.sp_add_sword.setValue(rec[72])
-        self.sp_add_knife.setValue(rec[73])
-        self.sp_add_unusual.setValue(rec[74])
-        self.sp_add_hid.setValue(rec[75])
+            self.sp_add_hp[i].setValue(self._word(rec, 48 + i))
+            self.sp_add_mp[i].setValue(self._word(rec, 51 + i))
+            self.sp_add_att[i].setValue(self._word(rec, 54 + i))
+            self.sp_add_def[i].setValue(self._word(rec, 57 + i))
+            self.sp_add_spd[i].setValue(self._word(rec, 60 + i))
+        self.sp_add_med.setValue(self._word(rec, 67))
+        # words 68+ may be absent in classic (68-word) magic records
+        self.sp_add_usepoi.setValue(self._word(rec, 68))
+        self.sp_add_medpoi.setValue(self._word(rec, 69))
+        self.sp_add_defpoi.setValue(self._word(rec, 70))
+        self.sp_add_fist.setValue(self._word(rec, 71))
+        self.sp_add_sword.setValue(self._word(rec, 72))
+        self.sp_add_knife.setValue(self._word(rec, 73))
+        self.sp_add_unusual.setValue(self._word(rec, 74))
+        self.sp_add_hid.setValue(self._word(rec, 75))
 
-        is_neigong = rec[12] == 5
-        self.gongti_box.setEnabled(True)  # still editable for any magic
+        beyond = words <= 68
+        self.sp_max_lv.setEnabled(not beyond)
+        self.gongti_box.setEnabled(True)
         self.gongti_box.setTitle(
-            "内功 / 功体属性" + ("" if is_neigong else "（当前非内功，字段仍可改）")
+            "内功 / 功体属性"
+            + ("（经典字宽：高位字段可能无效）" if beyond else "")
         )
+
+        is_neigong = self._word(rec, 12) == 5
+        if not beyond:
+            self.gongti_box.setTitle(
+                "内功 / 功体属性" + ("" if is_neigong else "（当前非内功，字段仍可改）")
+            )
 
         self._loading = False
         self._refresh_eft_preview()
@@ -424,24 +437,31 @@ class MagicEditorPanel(QWidget):
     def _refresh_eft_preview(self) -> None:
         ami = self.sp_ami.value()
         self.eft_preview.setText("加载中…")
-        if not self.ctx.data_root:
+        if not self.ctx.data_root or not self.ctx.profile:
             self.eft_preview.setText("无 data_root")
             return
-        path = self.ctx.data_root / "eft" / f"eft{ami:03d}.pic"
-        if not path.is_file():
-            path = self.ctx.data_root / "eft" / f"eft{ami}.pic"
-        if not path.is_file():
-            self.eft_preview.setText(f"找不到\neft{ami:03d}.pic")
-            return
+        from kys_formats.assets import load_eft_preview_image, resolve_eft_pic_path
+
+        assets = self.ctx.profile.assets
         try:
-            if self._eft_ami != ami or self._eft_cache is None:
-                self._eft_cache = PicArchive()
-                self._eft_cache.load(path)
-                self._eft_ami = ami
-            if self._eft_cache.count <= 0:
-                self.eft_preview.setText("空包")
-                return
-            img = self._eft_cache.frames[0].to_image()
+            if assets.eft_mode == "pic_file":
+                path = resolve_eft_pic_path(self.ctx.data_root, assets, ami)
+                if path is None:
+                    self.eft_preview.setText(f"找不到\neft{ami:03d}.pic")
+                    return
+                if self._eft_ami != ami or self._eft_cache is None:
+                    self._eft_cache = PicArchive()
+                    self._eft_cache.load(path)
+                    self._eft_ami = ami
+                if self._eft_cache.count <= 0:
+                    self.eft_preview.setText("空包")
+                    return
+                img = self._eft_cache.frames[0].to_image()
+            else:
+                img = load_eft_preview_image(self.ctx.data_root, assets, ami)
+                if img is None and assets.eft_mode == "idx_grp":
+                    self.eft_preview.setText(f"eft.idx/grp\n帧 {ami}\n(RLE 暂不预览)")
+                    return
             if img is None:
                 self.eft_preview.setText("空帧")
                 return
@@ -505,7 +525,8 @@ class MagicEditorPanel(QWidget):
                 sets[57 + i] = self.sp_add_def[i].value()
                 sets[60 + i] = self.sp_add_spd[i].value()
             for w, v in sets.items():
-                arc.magics.set(mid, w, v)
+                if 0 <= w < arc.magics.words:
+                    arc.magics.set(mid, w, v)
             # Linear fill MoveDistance[1..8] / AttDistance[1..8] between Lv1 and Lv10
             m0, m9 = self.sp_move1.value(), self.sp_move10.value()
             a0, a9 = self.sp_att1.value(), self.sp_att10.value()
@@ -517,8 +538,10 @@ class MagicEditorPanel(QWidget):
                 else:
                     mv = m0 + (m9 - m0) * lv // 9
                     av = a0 + (a9 - a0) * lv // 9
-                arc.magics.set(mid, 28 + lv, mv)
-                arc.magics.set(mid, 38 + lv, av)
+                if 28 + lv < arc.magics.words:
+                    arc.magics.set(mid, 28 + lv, mv)
+                if 38 + lv < arc.magics.words:
+                    arc.magics.set(mid, 38 + lv, av)
             self.ctx.statusMessage.emit(f"武功 {mid} 已写入内存（请点「保存到磁盘」）")
             # refresh list item text
             self._rebuild_list()
