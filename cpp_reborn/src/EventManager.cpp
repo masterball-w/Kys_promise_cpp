@@ -953,9 +953,28 @@ void EventManager::Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int 
     std::string heroSurname = ExtractSurnameBytesGbk(heroName);
     std::string heroGiven = (heroName.size() > heroSurname.size()) ? heroName.substr(heroSurname.size()) : "";
 
+    auto isGbkLead = [](unsigned char b) -> bool {
+        return b >= 0x81 && b <= 0xFE;
+    };
+    auto isGbkTrail = [](unsigned char b) -> bool {
+        return (b >= 0x40 && b <= 0x7E) || (b >= 0x80 && b <= 0xFE);
+    };
+
     std::string cleanText;
     for (size_t i = 0; i < fullText.length(); ++i) {
         unsigned char c = (unsigned char)fullText[i];
+
+        // Walk GBK pairs first (Pascal NewTalk is word-aligned). Trail 0x5E of
+        // 頭/過 must not be treated as ASCII color-control '^'.
+        if (isGbkLead(c) && i + 1 < fullText.length()) {
+            unsigned char trail = (unsigned char)fullText[i + 1];
+            if (isGbkTrail(trail)) {
+                cleanText += (char)c;
+                cleanText += (char)trail;
+                ++i;
+                continue;
+            }
+        }
         
         // Check for double-char control codes (KYS Standard)
         if (i + 1 < fullText.length()) {
@@ -1003,7 +1022,7 @@ void EventManager::Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int 
             }
         }
 
-        // Control Codes
+        // Control Codes (ASCII only — already skipped GBK trails above)
         if (c == '^') {
             if (i + 1 < fullText.length()) {
                 // Skip color code

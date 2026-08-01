@@ -784,6 +784,7 @@ bool BattleManager::StartBattle(int battleId, int getExp) {
         br.setKnowledge(rData.getKnowledge());
         br.setProgress(0);
         br.setDead(0);
+        br.setShow(0);
         br.setFace(2);
         br.setShowNumber(-1);
         br.setAuto(-1);
@@ -835,6 +836,7 @@ bool BattleManager::StartBattle(int battleId, int getExp) {
             br.setKnowledge(rData.getKnowledge());
             br.setProgress(0);
             br.setDead(0);
+            br.setShow(0);
             br.setFace(1);
             br.setShowNumber(-1);
             br.setAuto(-1);
@@ -1080,55 +1082,522 @@ void BattleManager::ApplyGongtiAuraPoison(int roleIdx) {
     }
 }
 
-void BattleManager::RunBattle() {
-    std::cout << "Entering Battle Loop..." << std::endl;
-    SDL_Event event;
-    m_battleResult = 0;
-    m_exitAutoRequested = false;
+namespace {
+constexpr int kProgressCycle = 300;
 
-    while (m_battleRunning) {
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) {
-                m_battleRunning = false;
-                GameManager::getInstance().Quit();
-                return;
+// Free Pascal `mod`/`div` match C++ `%`/`/` for positive divisors: toward-zero, sign follows dividend.
+// CRITICAL: do NOT normalize negative mods to [0,299]. After Progress-300 from 299 → -1,
+// Pascal treats (-1 mod 300) as -1 (not ready). Normalizing to 299 causes infinite re-actions.
+static int ProgressMod(int progress) {
+    return progress % kProgressCycle;
+}
+
+static int ProgressCycle(int progress) {
+    return progress / kProgressCycle;
+}
+
+static int ProgressModForDisplay(int progress) {
+    int mod = ProgressMod(progress);
+    return (mod < 0) ? 0 : mod;
+}
+
+static int FindAttackMagicForAuto(int rnum, int& outLevel) {
+    Role& role = GameManager::getInstance().getRole(rnum);
+    int bestMagic = -1;
+    int bestScore = -1;
+    for (int i = 0; i < 10; ++i) {
+        int m = role.getMagic(i);
+        if (m <= 0) continue;
+        Magic& mg = GameManager::getInstance().getMagic(m);
+        if (mg.getMagicType() == 5 || mg.getEventNum() > 0) continue;
+        int lv = GetMagicBattleLevel(rnum, m);
+        if (mg.getNeedMP() * lv > role.getCurrentMP()) continue;
+        int attDist = mg.getAttDistance(lv - 1);
+        if (attDist < 0) continue;
+        int score = role.getMagLevel(i) + attDist * 20 + mg.getMoveDistance(lv - 1) * 10;
+        if (score > bestScore) {
+            bestScore = score;
+            bestMagic = m;
+            outLevel = lv;
+        }
+    }
+    return bestMagic;
+}
+}
+
+void BattleManager::UpdateMaxSpeed() {
+    m_maxSpeed = 1;
+    for (const auto& role : m_battleRoles) {
+        if (!role.getDead() && role.getRNum() >= 0) {
+            m_maxSpeed = std::max(m_maxSpeed, (int)role.getSpeed());
+        }
+    }
+}
+
+void BattleManager::ReArrangeBRole() {
+    const bool atbMode = GameManager::getInstance().getBattleMode() > 0;
+    auto roleSpeed = [&](int idx) {
+        BattleRole& br = m_battleRoles[idx];
+        int rnum = br.getRNum();
+        if (rnum < 0 || br.getDead()) return 0;
+        int speed = GetRoleSpeed(rnum, true);
+        Role& rData = GameManager::getInstance().getRole(rnum);
+        if (CheckEquipSet(rData.getEquip(0), rData.getEquip(1), rData.getEquip(2), rData.getEquip(3)) == 5) {
+            speed += 30;
+        }
+        bool petFirst = (GetPetSkill(5, 1) && br.getRNum() == 0) ||
+                        (GetPetSkill(5, 3) && br.getTeam() == 0);
+        if (petFirst) speed += 100000;
+        return speed;
+    };
+
+    for (size_t i1 = 0; i1 + 1 < m_battleRoles.size(); ++i1) {
+        for (size_t i2 = i1 + 1; i2 < m_battleRoles.size(); ++i2) {
+            if (roleSpeed((int)i1) < roleSpeed((int)i2)) {
+                std::swap(m_battleRoles[i1], m_battleRoles[i2]);
             }
         }
-        
-        const bool* keyState = SDL_GetKeyboardState(NULL);
-        if (keyState[SDL_SCANCODE_ESCAPE] || keyState[SDL_SCANCODE_SPACE]) {
-            m_exitAutoRequested = true;
+    }
+
+    for (int x = 0; x < 64; ++x) {
+        for (int y = 0; y < 64; ++y) {
+            m_battleField[2][x][y] = -1;
+            m_battleField[5][x][y] = -1;
         }
-        float mouseX = 0.0f, mouseY = 0.0f;
-        Uint32 mouseState = SDL_GetMouseState(&mouseX, &mouseY);
-        if (mouseState & SDL_BUTTON_RMASK) {
-            m_exitAutoRequested = true;
+    }
+
+    int aliveCount = 0;
+    for (const auto& br : m_battleRoles) {
+        if (!br.getDead() && br.getRNum() >= 0) ++aliveCount;
+    }
+    int placed = 0;
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        BattleRole& br = m_battleRoles[i];
+        if (br.getRNum() < 0) continue;
+        if (!br.getDead()) {
+            m_battleField[2][br.getX()][br.getY()] = (int16_t)i;
+            m_battleField[5][br.getX()][br.getY()] = -1;
+            if (atbMode) {
+                br.setProgress((int16_t)((aliveCount - placed) * 5));
+            }
+            ++placed;
+        } else {
+            m_battleField[2][br.getX()][br.getY()] = -1;
+            m_battleField[5][br.getX()][br.getY()] = -1;
+        }
+    }
+}
+
+int BattleManager::CountProgress() {
+    int result = -1;
+    double b = 1.0;
+    // Align with Pascal CountProgress: readiness uses (Progress mod 300), including negatives.
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        BattleRole& br = m_battleRoles[i];
+        if (br.getRNum() < 0 || br.getDead() || br.getWait() != 0) continue;
+        const int mod = ProgressMod(br.getProgress());
+        if (mod + br.getSpeed() / 15 >= kProgressCycle - 1) {
+            const double a = (kProgressCycle - mod) / 15.0;
+            b = std::min(a, b);
+            result = (int)i;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        BattleRole& br = m_battleRoles[i];
+        if (br.getRNum() < 0 || br.getDead()) continue;
+        if (br.getFrozen() > 0) {
+            br.setFrozen(br.getFrozen() - (int)(b * (br.getSpeed() / 15)) / 3);
+            continue;
+        }
+        if (br.getWait() != 0) continue;
+        br.setFrozen(0);
+        const int n = ProgressCycle(br.getProgress());
+        br.setProgress((int16_t)(br.getProgress() + (int)(b * (br.getSpeed() / 15))));
+        if (ProgressCycle(br.getProgress()) > n) {
+            br.setProgress((int16_t)(n * kProgressCycle + kProgressCycle - 1));
+        }
+        if ((int)i == result) {
+            br.setProgress((int16_t)(n * kProgressCycle + kProgressCycle - 1));
+        }
+    }
+    return result;
+}
+
+void BattleManager::ShowProgress() {
+    if (GameManager::getInstance().getBattleMode() == 0) return;
+    std::vector<BattleProgressEntry> entries;
+    entries.reserve(m_battleRoles.size());
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        const BattleRole& br = m_battleRoles[i];
+        if (br.getRNum() < 0 || br.getDead()) continue;
+        BattleProgressEntry e;
+        Role& role = GameManager::getInstance().getRole(br.getRNum());
+        e.headNum = br.getPic() >= 0 ? br.getPic() : role.getHeadNum();
+        e.team = br.getTeam();
+        e.progressMod = ProgressModForDisplay(br.getProgress());
+        e.selected = (m_battleField[4][br.getX()][br.getY()] > 0);
+        entries.push_back(e);
+    }
+    UIManager::getInstance().DrawBattleProgressBar(entries, 250, 30);
+}
+
+void BattleManager::DeductActionProgress(BattleRole& actor) {
+    if (GameManager::getInstance().getBattleMode() <= 0) return;
+    // Pascal BattleMainControl: Progress := Progress - 300 (may go negative; that is intentional).
+    const int before = actor.getProgress();
+    actor.setProgress((int16_t)(before - kProgressCycle));
+    std::cout << "[ATB] deduct progress " << before << " -> " << actor.getProgress()
+              << " mod=" << ProgressMod(actor.getProgress()) << std::endl;
+}
+
+void BattleManager::ClearDeadRolePic() {
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        BattleRole& br = m_battleRoles[i];
+        if (br.getRNum() < 0) continue;
+        Role& role = GameManager::getInstance().getRole(br.getRNum());
+        if (role.getCurrentHP() <= 0) {
+            br.setDead(1);
+            br.setShow(1);
+            if (br.getX() >= 0 && br.getX() < 64 && br.getY() >= 0 && br.getY() < 64) {
+                m_battleField[5][br.getX()][br.getY()] = (int16_t)i;
+                m_battleField[2][br.getX()][br.getY()] = -1;
+            }
+        }
+    }
+    for (size_t i = 0; i < m_battleRoles.size(); ++i) {
+        BattleRole& br = m_battleRoles[i];
+        if (br.getDead() != 0) continue;
+        if (br.getX() >= 0 && br.getX() < 64 && br.getY() >= 0 && br.getY() < 64) {
+            m_battleField[2][br.getX()][br.getY()] = (int16_t)i;
+            m_battleField[5][br.getX()][br.getY()] = -1;
+        }
+    }
+}
+
+void BattleManager::UnlockOneWaiter(int exceptIdx) {
+    for (size_t k = 0; k < m_battleRoles.size(); ++k) {
+        if ((int)k != exceptIdx && m_battleRoles[k].getWait() == 1) {
+            m_battleRoles[k].setWait(0);
+            break;
+        }
+    }
+}
+
+void BattleManager::PollBattleInput() {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) {
+            m_battleRunning = false;
+            GameManager::getInstance().Quit();
+            return;
+        }
+    }
+    const bool* keyState = SDL_GetKeyboardState(NULL);
+    if (keyState[SDL_SCANCODE_ESCAPE] || keyState[SDL_SCANCODE_SPACE]) {
+        m_exitAutoRequested = true;
+    }
+    float mouseX = 0.0f, mouseY = 0.0f;
+    Uint32 mouseState = SDL_GetMouseState(&mouseX, &mouseY);
+    if (mouseState & SDL_BUTTON_RMASK) {
+        m_exitAutoRequested = true;
+    }
+}
+
+bool BattleManager::CheckBattleEnd() {
+    ClearDeadRolePic();
+    int pAlive = 0;
+    int eAlive = 0;
+    for (auto& r : m_battleRoles) {
+        if (r.getRNum() < 0) continue;
+        Role& role = GameManager::getInstance().getRole(r.getRNum());
+        // Trust HP as source of truth (Pascal BattleStatus uses Dead, which ClearDeadRolePic syncs from HP).
+        if (role.getCurrentHP() <= 0) {
+            r.setDead(1);
+            continue;
+        }
+        if (r.getDead() != 0) continue;
+        if (r.getTeam() == 0) ++pAlive;
+        else ++eAlive;
+    }
+    if (pAlive > 0 && eAlive > 0) return false;
+    if (eAlive == 0 && pAlive >= 0) {
+        m_battleResult = 1;
+        m_battleRunning = false;
+        std::cout << "[BattleEnd] VICTORY p=" << pAlive << " e=" << eAlive << std::endl;
+        return true;
+    }
+    if (pAlive == 0 && eAlive > 0) {
+        m_battleResult = 2;
+        m_battleRunning = false;
+        std::cout << "[BattleEnd] DEFEAT p=" << pAlive << " e=" << eAlive << std::endl;
+        return true;
+    }
+    return false;
+}
+
+bool BattleManager::ProcessActorTurn(int actorIdx) {
+    if (actorIdx < 0 || actorIdx >= (int)m_battleRoles.size()) return true;
+    BattleRole& actor = m_battleRoles[actorIdx];
+
+    if (actor.getLifeAdd() == 0) {
+        actor.setAddAtt(std::max(0, actor.getAddAtt() - 1));
+        actor.setAddDef(std::max(0, actor.getAddDef() - 1));
+        actor.setAddSpd(std::max(0, actor.getAddSpd() - 1));
+        actor.setAddDodge(std::max(0, actor.getAddDodge() - 1));
+        actor.setAddStep(std::max(0, actor.getAddStep() - 1));
+        actor.setPerfectDodge(std::max(0, actor.getPerfectDodge() - 1));
+
+        int rnum = actor.getRNum();
+        if (rnum >= 0) {
+            Role& role = GameManager::getInstance().getRole(rnum);
+            if (GameManager::getInstance().GetEquipState(rnum, 11) ||
+                GameManager::getInstance().GetGongtiState(rnum, 11)) {
+                int add = role.getMaxHP() / 10;
+                add = std::min(add, (int)role.getMaxHP() - (int)role.getCurrentHP());
+                for (auto& br : m_battleRoles) br.setShowNumber(-1);
+                actor.setShowNumber(add);
+                if (add > 0) ShowHurtValue(3);
+                role.setCurrentHP(role.getCurrentHP() + add);
+            }
+            if (GameManager::getInstance().GetEquipState(rnum, 23) ||
+                GameManager::getInstance().GetGongtiState(rnum, 23)) {
+                int add = role.getMaxMP() / 20;
+                add = std::min(add, (int)role.getMaxMP() - (int)role.getCurrentMP());
+                for (auto& br : m_battleRoles) br.setShowNumber(-1);
+                actor.setShowNumber(add);
+                if (add > 0) ShowHurtValue(1);
+                role.setCurrentMP(role.getCurrentMP() + add);
+            }
+            ApplyGongtiStackAttack(actorIdx);
+        }
+        CalPoiHurtLife(actorIdx);
+        actor.setLifeAdd(1);
+    }
+
+    if (actor.getFrozen() >= 100) {
+        actor.setActed(1);
+        actor.setFrozen(actor.getFrozen() - 100);
+        if (GameManager::getInstance().getBattleMode() > 0) {
+            actor.setProgress(0);
+        }
+        actor.setRound(actor.getRound() + 1);
+        actor.setLifeAdd(0);
+        ApplyGongtiAuraPoison(actorIdx);
+        // true = keep battling; false = stop (matches caller: if (!ProcessActorTurn()) break)
+        return m_battleRunning;
+    }
+    if (actor.getFrozen() <= 0) {
+        actor.setFrozen(0);
+    }
+
+    SDL_Event clearEvent;
+    while (SDL_PollEvent(&clearEvent)) {
+        if (clearEvent.type == SDL_EVENT_QUIT) {
+            m_battleRunning = false;
+            GameManager::getInstance().Quit();
+            return false;
+        }
+    }
+
+    if (m_exitAutoRequested && actor.getTeam() == 0 && actor.getAuto() >= 0) {
+        actor.setAuto(-1);
+        m_exitAutoRequested = false;
+    }
+
+    if (actor.getTeam() == 0) {
+        if (m_forceAutoBattle) {
+            actor.setActed(0);
+            actor.setWait(0);
+            CalMoveAbility();
+            AutoBattle(actorIdx);
+            actor.setActed(1);
+            if (actor.getActed() == 1) {
+                actor.setRound(actor.getRound() + 1);
+                actor.setLifeAdd(0);
+                ApplyGongtiAuraPoison(actorIdx);
+            }
+        } else {
+            actor.setActed(0);
+            actor.setWait(0);
+            CalMoveAbility();
+
+            if (actor.getAuto() >= 0) {
+                AutoBattle(actorIdx);
+                actor.setActed(1);
+            }
+
+            while (actor.getActed() == 0 && actor.getWait() == 0 && actor.getAuto() < 0) {
+                if (CheckBattleEnd()) return false;
+                int menuResult = BattleMenu(actorIdx);
+                if (menuResult < 0) break;
+                if (menuResult == 0) {
+                    int mx, my;
+                    if (SelectMove(actorIdx, mx, my)) {
+                        MoveAnimation(actorIdx, mx, my);
+                        InputManager::getInstance().FlushEvents();
+                    }
+                } else if (menuResult == 1) {
+                    int magicId = -1;
+                    if (SelectMagic(actorIdx, magicId)) {
+                        Magic& magic = GameManager::getInstance().getMagic(magicId);
+                        if (magic.getMagicType() == 5) {
+                            std::string prompt = "是否設置功體為" + TextManager::getInstance().gbkToUtf8(magic.getName()) + "？";
+                            if (UIManager::getInstance().ShowChoice(prompt) == 0) {
+                                GameManager::getInstance().getRole(actor.getRNum()).setGongti(magicId);
+                            }
+                            for (int x = 0; x < 64; ++x) {
+                                for (int y = 0; y < 64; ++y) {
+                                    m_battleField[4][x][y] = 0;
+                                }
+                            }
+                            m_battleField[4][actor.getX()][actor.getY()] = 1;
+                            m_showAttackRange = true;
+                            SoundManager::getInstance().PlaySound(magic.getSoundNum());
+                            PlayActionAmination(actorIdx, magic.getMagicType(), actor.getX(), actor.getY());
+                            PlayMagicAmination(actorIdx, magicId, 10, actor.getX(), actor.getY());
+                            m_showAttackRange = false;
+                            for (int x = 0; x < 64; ++x) {
+                                for (int y = 0; y < 64; ++y) {
+                                    m_battleField[4][x][y] = 0;
+                                }
+                            }
+                            CalMoveAbility();
+                            actor.setActed(1);
+                        } else {
+                            int tx, ty;
+                            if (SelectMagicTarget(actorIdx, magicId, tx, ty)) {
+                                AttackAt(actorIdx, tx, ty, magicId);
+                            }
+                        }
+                    }
+                } else if (menuResult == 2) {
+                    UsePoision(actorIdx);
+                } else if (menuResult == 3) {
+                    MedPoision(actorIdx);
+                } else if (menuResult == 4) {
+                    Medcine(actorIdx);
+                } else if (menuResult == 5) {
+                    MedFrozen(actorIdx);
+                } else if (menuResult == 6) {
+                    actor.setActed(1);
+                    actor.setProgress((int16_t)std::min(1200, actor.getProgress() + 1));
+                } else if (menuResult == 7) {
+                    BattleMenuItem(actorIdx);
+                } else if (menuResult == 8) {
+                    actor.setWait(1);
+                    actor.setActed(1);
+                } else if (menuResult == 9) {
+                    UIManager::getInstance().ShowStatus(actor.getRNum());
+                } else if (menuResult == 10) {
+                    int rnum = actor.getRNum();
+                    Role& rData = GameManager::getInstance().getRole(rnum);
+                    int hurt = rData.getHurt();
+                    if (hurt < 0) hurt = 0;
+                    if (hurt > 100) hurt = 100;
+                    int addHp = ((100 - hurt) * rData.getMaxHP()) / 2000;
+                    int addMp = ((100 - hurt) * rData.getMaxMP()) / 2000;
+                    int addPhy = ((100 - hurt) * MAX_PHYSICAL_POWER) / 2000;
+                    rData.setCurrentHP(std::min((int)rData.getMaxHP(), rData.getCurrentHP() + addHp));
+                    rData.setCurrentMP(std::min((int)rData.getMaxMP(), rData.getCurrentMP() + addMp));
+                    rData.setPhyPower(std::min(MAX_PHYSICAL_POWER, rData.getPhyPower() + addPhy));
+                    actor.setActed(1);
+                    actor.setProgress((int16_t)(actor.getProgress() - 240));
+                    actor.setProgress((int16_t)(actor.getProgress() + ((actor.getStep() * 120) / std::max(1, actor.getSpeed() / 15))));
+                } else if (menuResult == 11) {
+                    int autoMode = SelectAutoTarget(actorIdx);
+                    if (autoMode >= 0) {
+                        actor.setAuto(autoMode);
+                        AutoBattle(actorIdx);
+                    }
+                }
+                if (actor.getActed() == 1) {
+                    actor.setRound(actor.getRound() + 1);
+                    actor.setLifeAdd(0);
+                    ApplyGongtiAuraPoison(actorIdx);
+                }
+            }
+        }
+    } else {
+        actor.setActed(0);
+        actor.setWait(0);
+        CalMoveAbility();
+        AutoBattle(actorIdx);
+        actor.setActed(1);
+        if (actor.getActed() == 1) {
+            actor.setRound(actor.getRound() + 1);
+            actor.setLifeAdd(0);
+            ApplyGongtiAuraPoison(actorIdx);
+        }
+    }
+    // true = keep battling; false = stop (matches caller: if (!ProcessActorTurn()) break)
+    return m_battleRunning;
+}
+
+void BattleManager::RunTurnBasedBattle() {
+    while (m_battleRunning) {
+        PollBattleInput();
+        CalMoveAbility();
+        ReArrangeBRole();
+
+        for (auto& br : m_battleRoles) {
+            br.setActed(0);
+            br.setShowNumber(0);
+            br.setLifeAdd(0);
         }
 
+        int i = 0;
+        while (i < (int)m_battleRoles.size() && m_battleRunning) {
+            BattleRole& actor = m_battleRoles[i];
+            if (actor.getRNum() < 0 || actor.getDead() != 0) {
+                ++i;
+                continue;
+            }
+
+            m_currentRoleIndex = i;
+            m_cursorX = actor.getX();
+            m_cursorY = actor.getY();
+            m_showMoveRange = false;
+            m_showAttackRange = false;
+            m_highlightRoleIndex = i;
+
+            std::cout << "[TurnBased] i=" << i << " rnum=" << actor.getRNum()
+                      << " team=" << actor.getTeam() << " acted=" << actor.getActed() << std::endl;
+
+            // ProcessActorTurn: true=continue battle, false=stop
+            if (!ProcessActorTurn(i)) break;
+
+            ClearDeadRolePic();
+            if (CheckBattleEnd()) break;
+
+            // Pascal OldBattleMainControl: only advance when Acted=1
+            if (actor.getActed() == 1) {
+                actor.setLifeAdd(0);
+                ++i;
+            }
+
+            RenderBattle();
+            UIManager::getInstance().UpdateScreen();
+            SDL_Delay((200 * GameManager::getInstance().getGameSpeed()) / 10);
+        }
+
+        if (m_forceAutoBattle && m_forceAutoBattleFrameLimit > 0) {
+            m_forceAutoBattleFrameCount++;
+            if (m_forceAutoBattleFrameCount >= m_forceAutoBattleFrameLimit) {
+                m_battleRunning = false;
+            }
+        }
+    }
+}
+
+void BattleManager::RunAtbBattle() {
+    while (m_battleRunning) {
+        PollBattleInput();
         CalMoveAbility();
 
-        int actorIdx = -1;
-        int maxProgress = -1;
-        bool petSkillFirst = GetPetSkill(5, 1);
-        bool petSkillTeamFirst = GetPetSkill(5, 3);
-
-        for (int i = 0; i < m_battleRoles.size(); ++i) {
-            if (m_battleRoles[i].getDead()) continue;
-            if (m_battleRoles[i].getProgress() >= 100) {
-                int progressScore = m_battleRoles[i].getProgress();
-                if (petSkillFirst && m_battleRoles[i].getTeam() == 0 && m_battleRoles[i].getRNum() == 0) {
-                    progressScore += 10000;
-                } else if (petSkillTeamFirst && m_battleRoles[i].getTeam() == 0) {
-                    progressScore += 5000;
-                }
-                if (progressScore > maxProgress) {
-                    maxProgress = progressScore;
-                    actorIdx = i;
-                }
-            }
-        }
-
-        if (actorIdx != -1) {
+        int actorIdx = CountProgress();
+        if (actorIdx >= 0) {
             BattleRole& actor = m_battleRoles[actorIdx];
             m_currentRoleIndex = actorIdx;
             m_cursorX = actor.getX();
@@ -1136,221 +1605,37 @@ void BattleManager::RunBattle() {
             m_showMoveRange = false;
             m_showAttackRange = false;
             m_highlightRoleIndex = actorIdx;
-            
-            for (int i = 0; i < m_battleRoles.size(); ++i) {
-                m_battleRoles[i].setShowNumber(-1);
+            actor.setActed(0);
+
+            for (auto& br : m_battleRoles) {
+                br.setShowNumber(-1);
             }
 
-            if (actor.getLifeAdd() == 0) {
-                actor.setAddAtt(std::max(0, actor.getAddAtt() - 1));
-                actor.setAddDef(std::max(0, actor.getAddDef() - 1));
-                actor.setAddSpd(std::max(0, actor.getAddSpd() - 1));
-                actor.setAddDodge(std::max(0, actor.getAddDodge() - 1));
-                actor.setAddStep(std::max(0, actor.getAddStep() - 1));
-                actor.setPerfectDodge(std::max(0, actor.getPerfectDodge() - 1));
+            if (!ProcessActorTurn(actorIdx)) break;
 
-                int rnum = actor.getRNum();
-                if (rnum >= 0) {
-                    Role& role = GameManager::getInstance().getRole(rnum);
-                    if (GameManager::getInstance().GetEquipState(rnum, 11) ||
-                        GameManager::getInstance().GetGongtiState(rnum, 11)) {
-                        int add = role.getMaxHP() / 10;
-                        add = std::min(add, (int)role.getMaxHP() - (int)role.getCurrentHP());
-                        for (auto& br : m_battleRoles) br.setShowNumber(-1);
-                        actor.setShowNumber(add);
-                        if (add > 0) ShowHurtValue(3);
-                        role.setCurrentHP(role.getCurrentHP() + add);
-                    }
-                    if (GameManager::getInstance().GetEquipState(rnum, 23) ||
-                        GameManager::getInstance().GetGongtiState(rnum, 23)) {
-                        int add = role.getMaxMP() / 20;
-                        add = std::min(add, (int)role.getMaxMP() - (int)role.getCurrentMP());
-                        for (auto& br : m_battleRoles) br.setShowNumber(-1);
-                        actor.setShowNumber(add);
-                        if (add > 0) ShowHurtValue(1);
-                        role.setCurrentMP(role.getCurrentMP() + add);
-                    }
-                    // State 26: stack +10 attack (max 10), keep on gongti switch but stop growing
-                    ApplyGongtiStackAttack(actorIdx);
-                }
-                CalPoiHurtLife(actorIdx);
-                actor.setLifeAdd(1);
-            }
-
-            if (actor.getFrozen() >= 100) {
+            // Pascal: only deduct when Acted=1; Wait also ends the turn.
+            if (actor.getWait() == 1 && actor.getActed() == 0) {
                 actor.setActed(1);
-                actor.setFrozen(actor.getFrozen() - 100);
-                actor.setProgress(0);
-                actor.setRound(actor.getRound() + 1);
-                actor.setLifeAdd(0);
-                ApplyGongtiAuraPoison(actorIdx);
-                continue;
-            } else if (actor.getFrozen() <= 0) {
-                actor.setFrozen(0);
             }
-
-            SDL_Event clearEvent;
-            while (SDL_PollEvent(&clearEvent)) {
-                if (clearEvent.type == SDL_EVENT_QUIT) {
-                    m_battleRunning = false;
-                    GameManager::getInstance().Quit();
-                    return;
-                }
-            }
-            
-            if (m_exitAutoRequested && actor.getTeam() == 0 && actor.getAuto() >= 0) {
-                actor.setAuto(-1);
-                m_exitAutoRequested = false;
-                std::cout << "[Auto] Exit auto mode requested for role " << actorIdx << std::endl;
-            }
-
-            if (actor.getTeam() == 0) {
-                if (m_forceAutoBattle) {
-                    actor.setActed(0);
-                    actor.setWait(0);
-                    CalMoveAbility();
-                    AutoBattle(actorIdx);
-                    if (actor.getActed() == 1) {
-                        actor.setProgress(0);
-                        ApplyGongtiAuraPoison(actorIdx);
-                    }
-                } else {
-                    actor.setActed(0);
-                    actor.setWait(0);
-                    CalMoveAbility();
-                    
-                    if (actor.getAuto() >= 0) {
-                        AutoBattle(actorIdx);
-                    }
-                    
-                    while (actor.getActed() == 0 && actor.getWait() == 0 && actor.getAuto() < 0) {
-                        int menuResult = BattleMenu(actorIdx);
-                        if (menuResult < 0) break;
-                        if (menuResult == 0) {
-                            int mx, my;
-                            if (SelectMove(actorIdx, mx, my)) {
-                                MoveRole(actorIdx, mx, my);
-                                // Prevent the confirming KEY_UP from immediately selecting the next menu item (usually 武學).
-                                InputManager::getInstance().FlushEvents();
-                            }
-                        } else if (menuResult == 1) {
-                            int magicId = -1;
-                            if (SelectMagic(actorIdx, magicId)) {
-                                Magic& magic = GameManager::getInstance().getMagic(magicId);
-                                if (magic.getMagicType() == 5) {
-                                    std::string prompt = "是否設置功體為" + TextManager::getInstance().gbkToUtf8(magic.getName()) + "？";
-                                    if (UIManager::getInstance().ShowChoice(prompt) == 0) {
-                                        GameManager::getInstance().getRole(actor.getRNum()).setGongti(magicId);
-                                    }
-                                    for (int x = 0; x < 64; ++x) {
-                                        for (int y = 0; y < 64; ++y) {
-                                            m_battleField[4][x][y] = 0;
-                                        }
-                                    }
-                                    m_battleField[4][actor.getX()][actor.getY()] = 1;
-                                    m_showAttackRange = true;
-                                    SoundManager::getInstance().PlaySound(magic.getSoundNum());
-                                    PlayActionAmination(actorIdx, magic.getMagicType(), actor.getX(), actor.getY());
-                                    PlayMagicAmination(actorIdx, magicId, 10, actor.getX(), actor.getY());
-                                    m_showAttackRange = false;
-                                    for (int x = 0; x < 64; ++x) {
-                                        for (int y = 0; y < 64; ++y) {
-                                            m_battleField[4][x][y] = 0;
-                                        }
-                                    }
-                                    CalMoveAbility();
-                                    actor.setActed(1);
-                                    actor.setProgress(0);
-                                } else {
-                                    int tx, ty;
-                                    if (SelectMagicTarget(actorIdx, magicId, tx, ty)) {
-                                        AttackAt(actorIdx, tx, ty, magicId);
-                                    }
-                                }
-                            }
-                        } else if (menuResult == 2) {
-                            UsePoision(actorIdx);
-                        } else if (menuResult == 3) {
-                            MedPoision(actorIdx);
-                        } else if (menuResult == 4) {
-                            Medcine(actorIdx);
-                        } else if (menuResult == 5) {
-                            MedFrozen(actorIdx);
-                        } else if (menuResult == 6) {
-                            actor.setActed(1);
-                            actor.setProgress(std::min(1200, actor.getProgress() + 1));
-                        } else if (menuResult == 7) {
-                            BattleMenuItem(actorIdx);
-                        } else if (menuResult == 8) {
-                            actor.setWait(1);
-                        } else if (menuResult == 9) {
-                            UIManager::getInstance().ShowStatus(actor.getRNum());
-                        } else if (menuResult == 10) {
-                            int rnum = actor.getRNum();
-                            Role& rData = GameManager::getInstance().getRole(rnum);
-                            int hurt = rData.getHurt();
-                            if (hurt < 0) hurt = 0;
-                            if (hurt > 100) hurt = 100;
-                            int addHp = ((100 - hurt) * rData.getMaxHP()) / 2000;
-                            int addMp = ((100 - hurt) * rData.getMaxMP()) / 2000;
-                            int addPhy = ((100 - hurt) * MAX_PHYSICAL_POWER) / 2000;
-                            rData.setCurrentHP(std::min((int)rData.getMaxHP(), rData.getCurrentHP() + addHp));
-                            rData.setCurrentMP(std::min((int)rData.getMaxMP(), rData.getCurrentMP() + addMp));
-                            rData.setPhyPower(std::min(MAX_PHYSICAL_POWER, rData.getPhyPower() + addPhy));
-                            actor.setActed(1);
-                            actor.setProgress(actor.getProgress() - 240);
-                            actor.setProgress(actor.getProgress() + ((actor.getStep() * 120) / std::max(1, actor.getSpeed() / 15)));
-                        } else if (menuResult == 11) {
-                            int autoMode = SelectAutoTarget(actorIdx);
-                            if (autoMode >= 0) {
-                                actor.setAuto(autoMode);
-                                AutoBattle(actorIdx);
-                            }
-                        }
-                        if (actor.getActed() == 1) {
-                            actor.setProgress(0);
-                            actor.setRound(actor.getRound() + 1);
-                            actor.setLifeAdd(0);
-                            ApplyGongtiAuraPoison(actorIdx);
-                        }
-                    }
-                }
+            if (actor.getActed() == 1) {
+                DeductActionProgress(actor);
+                SDL_Delay(500);
             } else {
-                actor.setActed(0);
-                actor.setWait(0);
-                CalMoveAbility();
-                AutoBattle(actorIdx);
-                if (actor.getActed() == 1) {
-                    actor.setProgress(0);
-                    actor.setRound(actor.getRound() + 1);
-                    actor.setLifeAdd(0);
-                    ApplyGongtiAuraPoison(actorIdx);
+                actor.setActed(1);
+                DeductActionProgress(actor);
+                SDL_Delay(500);
+            }
+            UnlockOneWaiter(actorIdx);
+
+            for (int x = 0; x < 64; ++x) {
+                for (int y = 0; y < 64; ++y) {
+                    m_battleField[4][x][y] = 0;
                 }
-            }
-            
-            bool pAlive = false;
-            bool eAlive = false;
-            for(const auto& r : m_battleRoles) {
-                if (!r.getDead() && r.getRNum() >= 0) {
-                    if (r.getTeam() == 0) pAlive = true;
-                    else eAlive = true;
-                }
-            }
-            if (!pAlive) {
-                m_battleResult = 2; // Loss
-                m_battleRunning = false;
-            } else if (!eAlive) {
-                m_battleResult = 1; // Win
-                m_battleRunning = false;
-            }
-            
-        } else {
-            for (auto& role : m_battleRoles) {
-                if (role.getDead()) continue;
-                int spd = role.getSpeed();
-                role.setProgress(role.getProgress() + std::max(1, spd / 2));
             }
         }
+
+        if (CheckBattleEnd()) break;
+
         if (m_forceAutoBattle && m_forceAutoBattleFrameLimit > 0) {
             m_forceAutoBattleFrameCount++;
             if (m_forceAutoBattleFrameCount >= m_forceAutoBattleFrameLimit) {
@@ -1360,7 +1645,28 @@ void BattleManager::RunBattle() {
 
         RenderBattle();
         UIManager::getInstance().UpdateScreen();
-        SDL_Delay(16);
+        int delayMs = (m_maxSpeed * GameManager::getInstance().getGameSpeed()) / 1000;
+        if (delayMs < 1) delayMs = 1;
+        SDL_Delay(delayMs);
+    }
+}
+
+void BattleManager::RunBattle() {
+    const int battleMode = GameManager::getInstance().getBattleMode();
+    std::cout << "Entering Battle Loop... battleMode=" << battleMode
+              << (battleMode > 0 ? " (ATB)" : " (TurnBased)") << std::endl;
+    m_battleResult = 0;
+    m_exitAutoRequested = false;
+    m_lastActorIdx = -1;
+
+    ReArrangeBRole();
+    UpdateMaxSpeed();
+    CalMoveAbility();
+
+    if (battleMode > 0) {
+        RunAtbBattle();
+    } else {
+        RunTurnBasedBattle();
     }
 
     if (m_battleResult == 0) {
@@ -1599,6 +1905,74 @@ void BattleManager::CalMoveAbility() {
         }
         br.setSpeed(speed);
         if (rData.getMoveable() > 0) br.setStep(0);
+    }
+}
+
+void BattleManager::MoveAnimation(int roleIdx, int targetX, int targetY) {
+    if (roleIdx < 0 || roleIdx >= (int)m_battleRoles.size()) return;
+    BattleRole& role = m_battleRoles[roleIdx];
+    const int ax = targetX;
+    const int ay = targetY;
+    if (ax < 0 || ax >= 64 || ay < 0 || ay >= 64) return;
+
+    const int pathCost = m_battleField[3][ax][ay];
+    if (pathCost <= 0) {
+        MoveRole(roleIdx, ax, ay);
+        return;
+    }
+
+    int bx = role.getX();
+    int by = role.getY();
+    std::vector<int> lineX(pathCost + 1);
+    std::vector<int> lineY(pathCost + 1);
+    const int xInc[] = {1, -1, 0, 0};
+    const int yInc[] = {0, 0, 1, -1};
+
+    lineX[0] = bx;
+    lineY[0] = by;
+    lineX[pathCost] = ax;
+    lineY[pathCost] = ay;
+    for (int a = pathCost - 1; a >= 0; --a) {
+        for (int i = 0; i < 4; ++i) {
+            const int tempx = lineX[a + 1] + xInc[i];
+            const int tempy = lineY[a + 1] + yInc[i];
+            if (tempx >= 0 && tempx < 64 && tempy >= 0 && tempy < 64 &&
+                m_battleField[3][tempx][tempy] == m_battleField[3][lineX[a + 1]][lineY[a + 1]] - 1) {
+                lineX[a] = tempx;
+                lineY[a] = tempy;
+                break;
+            }
+        }
+    }
+
+    int pathStep = 1;
+    const int gameSpeed = GameManager::getInstance().getGameSpeed();
+    while (role.getStep() > 0 && !(bx == ax && by == ay)) {
+        if (lineX[pathStep] > bx) role.setFace(3);
+        else if (lineX[pathStep] < bx) role.setFace(0);
+        else if (lineY[pathStep] < by) role.setFace(2);
+        else role.setFace(1);
+
+        if (m_battleField[2][bx][by] == roleIdx) {
+            m_battleField[2][bx][by] = -1;
+        }
+        bx = lineX[pathStep];
+        by = lineY[pathStep];
+        if (m_battleField[2][bx][by] == -1) {
+            m_battleField[2][bx][by] = roleIdx;
+        }
+        ++pathStep;
+        role.setStep(std::max(0, role.getStep() - 1));
+
+        RenderBattle();
+        UIManager::getInstance().UpdateScreen();
+        SDL_Delay((gameSpeed * 20) / 10);
+    }
+
+    role.setX(bx);
+    role.setY(by);
+    if (bx >= 0 && bx < 64 && by >= 0 && by < 64) {
+        m_battleField[2][bx][by] = roleIdx;
     }
 }
 
@@ -1885,14 +2259,31 @@ int BattleManager::SelectAutoTarget(int roleIdx) {
     return -1;
 }
 
+void BattleManager::PauseShowActorStatus(int roleIdx, int delayMs) {
+    if (roleIdx < 0 || roleIdx >= (int)m_battleRoles.size()) return;
+    BattleRole& actor = m_battleRoles[roleIdx];
+    const int rnum = actor.getRNum();
+    if (rnum < 0) return;
+
+    RenderBattle();
+    UIManager::getInstance().ShowSimpleStatus(rnum, 30, 330, actor.getFrozen());
+    UIManager::getInstance().UpdateScreen();
+    if (delayMs > 0) SDL_Delay(delayMs);
+}
+
 void BattleManager::AutoBattle(int roleIdx) {
     BattleRole& actor = m_battleRoles[roleIdx];
     Role& role = GameManager::getInstance().getRole(actor.getRNum());
     if (actor.getActed() != 0) return;
-    
-    RenderBattle();
-    UIManager::getInstance().UpdateScreen();
-    SDL_Delay(100);
+
+    if (actor.getTeam() != 0) {
+        // Pascal AutoBattle2: showsimplestatus(rnum, 30, 330) + sdl_delay(350)
+        PauseShowActorStatus(roleIdx, 500);
+    } else {
+        RenderBattle();
+        UIManager::getInstance().UpdateScreen();
+        SDL_Delay(100);
+    }
     
     std::cout << "[Auto] role=" << roleIdx << " rnum=" << actor.getRNum()
               << " team=" << actor.getTeam()
@@ -1979,62 +2370,31 @@ void BattleManager::AutoBattle(int roleIdx) {
         Role& aData = GameManager::getInstance().getRole(actor.getRNum());
         
         // Try best available offensive magic (skip 内功 type 5)
-        int magicId = -1;
         int level = 1;
-        int bestScore = -1;
-        for (int i = 0; i < 10; i++) {
-            int m = aData.getMagic(i);
-            if (m <= 0) continue;
-            Magic& mg = GameManager::getInstance().getMagic(m);
-            if (mg.getMagicType() == 5) continue;
-            int lv = GetMagicBattleLevel(actor.getRNum(), m);
-            if (mg.getNeedMP() * lv > aData.getCurrentMP()) continue;
-            // Prefer higher MagLevel and longer reach
-            int score = aData.getMagLevel(i) + mg.getAttDistance(lv - 1) * 20 + mg.getMoveDistance(lv - 1) * 10;
-            if (score > bestScore) {
-                bestScore = score;
-                magicId = m;
-                level = lv;
-            }
-        }
-
+        int magicId = FindAttackMagicForAuto(actor.getRNum(), level);
+        
         // Calculate move and attack positions
         CalSelectableAreaEx(roleIdx, actor.getTeam(), 0);
         
         int bestMoveX = actor.getX();
         int bestMoveY = actor.getY();
         int bestDistAfterMove = minDist;
-        int attackX = -1, attackY = -1;
         
         int attackRange = 1;
-        int moveStep = 1;
         if (magicId > 0) {
             Magic& magic = GameManager::getInstance().getMagic(magicId);
             attackRange = magic.getAttDistance(level - 1);
-            moveStep = magic.getMoveDistance(level - 1);
-            if (CheckEquipSet(aData.getEquip(0), aData.getEquip(1), aData.getEquip(2), aData.getEquip(3)) == 1) moveStep += 1;
-            if (GameManager::getInstance().CheckBattleEffect(actor.getRNum(), 22)) moveStep += 1;
-            if (attackRange < 0) attackRange = 0;
-            if (moveStep < 0) moveStep = 0;
+            if (attackRange < 1) attackRange = 1;
         }
         
-        for(int x=0; x<64; x++) {
-            for(int y=0; y<64; y++) {
-                if (m_battleField[3][x][y] >= 0) {
-                    int d = std::abs(x - target.getX()) + std::abs(y - target.getY());
-                    // Can cast if within MoveDistance of caster after move (select aim cell)
-                    // For area types 0/3/6: aim at enemy if manhattan(movePos, enemy) <= moveStep
-                    if (d <= moveStep && d < bestDistAfterMove) {
-                        bestDistAfterMove = d;
-                        bestMoveX = x;
-                        bestMoveY = y;
-                        attackX = target.getX();
-                        attackY = target.getY();
-                    } else if (d < bestDistAfterMove && attackX < 0) {
-                        bestDistAfterMove = d;
-                        bestMoveX = x;
-                        bestMoveY = y;
-                    }
+        for (int x = 0; x < 64; x++) {
+            for (int y = 0; y < 64; y++) {
+                if (m_battleField[3][x][y] < 0) continue;
+                int d = std::abs(x - target.getX()) + std::abs(y - target.getY());
+                if (d < bestDistAfterMove) {
+                    bestDistAfterMove = d;
+                    bestMoveX = x;
+                    bestMoveY = y;
                 }
             }
         }
@@ -2044,37 +2404,50 @@ void BattleManager::AutoBattle(int roleIdx) {
         
         // Move to best position
         if (bestMoveX != actor.getX() || bestMoveY != actor.getY()) {
-            MoveRole(roleIdx, bestMoveX, bestMoveY);
-            RenderBattle();
-            UIManager::getInstance().UpdateScreen();
-            SDL_Delay(150);
+            MoveAnimation(roleIdx, bestMoveX, bestMoveY);
         }
         
-        // Attack if in range
-        if (bestDistAfterMove <= attackRange && actor.getActed() == 0) {
-            int dmg = 0;
+        const int distAfterMove = std::abs(actor.getX() - target.getX()) + std::abs(actor.getY() - target.getY());
+        
+        // Attack if in range (use Attack() for action + magic VFX)
+        if (distAfterMove <= attackRange && actor.getActed() == 0) {
             if (magicId > 0) {
                 std::cout << "[Auto] useMagic=" << magicId << " level=" << level << std::endl;
-                AttackAt(roleIdx, target.getX(), target.getY(), magicId);
-                if (actor.getActed() == 1) return;
-                dmg = CalHurtValue(roleIdx, targetIdx, magicId, level);
+                Attack(roleIdx, targetIdx, magicId);
             } else {
                 std::cout << "[Auto] usePhysical" << std::endl;
+                PlayActionAmination(roleIdx, 0, target.getX(), target.getY());
+                SoundManager::getInstance().PlaySound(1);
                 int att = GetRoleAttack(actor.getRNum(), true);
                 int def = GetRoleDefence(target.getRNum(), true);
-                dmg = std::max(1, att - def / 2);
+                int dmg = std::max(1, att - def / 2);
+                tData.setCurrentHP(std::max(0, tData.getCurrentHP() - dmg));
+                if (tData.getCurrentHP() <= 0) target.setDead(1);
+                target.setShowNumber(dmg);
+                ShowHurtValue(0);
+                ClearDeadRolePic();
+                actor.setActed(1);
             }
-            
-            tData.setCurrentHP(std::max(0, tData.getCurrentHP() - dmg));
-            if (tData.getCurrentHP() == 0) target.setDead(1);
-            
-            target.setShowNumber(dmg);
-            ShowHurtValue(0);
         }
     }
-    
-    actor.setActed(1);
-    actor.setProgress(0);
+
+    // Pascal AutoBattle/AutoBattle2: if nothing succeeded, Rest ends the turn (no ATB progress tweak here).
+    if (actor.getActed() == 0) {
+        int rnum = actor.getRNum();
+        if (rnum >= 0) {
+            Role& rData = GameManager::getInstance().getRole(rnum);
+            int hurt = rData.getHurt();
+            if (hurt < 0) hurt = 0;
+            if (hurt > 100) hurt = 100;
+            int addHp = ((100 - hurt) * rData.getMaxHP()) / 2000;
+            int addMp = ((100 - hurt) * rData.getMaxMP()) / 2000;
+            int addPhy = ((100 - hurt) * MAX_PHYSICAL_POWER) / 2000;
+            rData.setCurrentHP(std::min((int)rData.getMaxHP(), rData.getCurrentHP() + addHp));
+            rData.setCurrentMP(std::min((int)rData.getMaxMP(), rData.getCurrentMP() + addMp));
+            rData.setPhyPower(std::min(MAX_PHYSICAL_POWER, rData.getPhyPower() + addPhy));
+        }
+        actor.setActed(1);
+    }
 }
 
 // --- Item Usage Implementation ---
@@ -2995,6 +3368,7 @@ void BattleManager::CalHurtRole(int attackerIdx, int magicId, int level) {
     }
 
     ShowHurtValue(magic.getHurtType());
+    ClearDeadRolePic();
 
     // 攻击者消耗
     if (GameManager::getInstance().CheckBattleEffect(rnum, 10)) {
@@ -3935,19 +4309,18 @@ void BattleManager::RenderBattle() {
             }
             
             int rIdx = m_battleField[2][i1][i2];
-            if (rIdx >= 0 && rIdx < m_battleRoles.size()) {
+            if (rIdx < 0) rIdx = m_battleField[5][i1][i2];
+            if (rIdx >= 0 && rIdx < (int)m_battleRoles.size()) {
                 BattleRole& r = m_battleRoles[rIdx];
-                if (!r.getDead()) {
+                if (r.getShow() == 0 && r.getRNum() >= 0 && !r.getDead()) {
                     int headNum = -1;
                     int poison = 0;
                     int hurt = 0;
                     if (r.getPic() >= 0) headNum = r.getPic();
-                    if (r.getRNum() >= 0) {
-                        Role& roleData = GameManager::getInstance().getRole(r.getRNum());
-                        if (headNum < 0) headNum = roleData.getHeadNum();
-                        poison = roleData.getPoision();
-                        hurt = roleData.getHurt();
-                    }
+                    Role& roleData = GameManager::getInstance().getRole(r.getRNum());
+                    if (headNum < 0) headNum = roleData.getHeadNum();
+                    poison = roleData.getPoision();
+                    hurt = roleData.getHurt();
                     int face = r.getFace();
                     StatusPulse pulse = ComputeStatusPulse(poison, hurt, r.getFrozen());
                     int flashWhite = 0;
@@ -3962,14 +4335,13 @@ void BattleManager::RenderBattle() {
                     } else {
                         SceneManager::getInstance().DrawWarTile(renderer, BEGIN_BATTLE_ROLE_PIC + (r.getTeam() * 5), x, y, 0, 0, pulse.green, pulse.red, pulse.gray, flashWhite);
                     }
-                } else {
-                    SceneManager::getInstance().DrawWarTile(renderer, BEGIN_BATTLE_ROLE_PIC + 20, x, y, 0, 0);
                 }
             }
         }
     }
 
     GameManager::getInstance().RenderScreenTo(renderer);
+    ShowProgress();
 }
 
 void BattleManager::PlayActionAmination(int bnum, int mode, int targetX, int targetY) {

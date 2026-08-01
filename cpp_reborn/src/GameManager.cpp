@@ -115,6 +115,7 @@ bool GameManager::Init() {
         std::cerr << "Failed to init UIManager" << std::endl;
         return false;
     }
+    loadSettings();
 
     // ===== 移动逻辑测试 =====
     {
@@ -2607,4 +2608,54 @@ void GameManager::setShopData(int shopId, int index, int16_t value) {
     if (shopId < 0 || shopId >= (int)m_shops.size()) return;
     if (index < 0 || index >= 18) return;
     m_shops[shopId][index] = value;
+}
+
+void GameManager::loadSettings() {
+    std::string configPath = FileLoader::getDataRoot() + "kys_config.ini";
+    std::ifstream file(configPath);
+    if (!file.is_open()) {
+        file.open("kys_config.ini");
+    }
+    if (!file.is_open()) return;
+
+    std::string line;
+    while (std::getline(file, line)) {
+        const size_t eqPos = line.find('=');
+        if (eqPos == std::string::npos) continue;
+        std::string key = line.substr(0, eqPos);
+        std::string value = line.substr(eqPos + 1);
+        while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) value.erase(value.begin());
+        if (key == "battlemode" || key == "battleMode") {
+            try {
+                m_battleMode = std::min(2, std::max(0, std::stoi(value)));
+            } catch (...) {}
+        }
+    }
+}
+
+void GameManager::saveBattleModeSetting() {
+    std::string configPath = FileLoader::getDataRoot() + "kys_config.ini";
+    std::vector<std::string> lines;
+    std::ifstream in(configPath);
+    if (!in.is_open()) in.open("kys_config.ini");
+    bool found = false;
+    if (in.is_open()) {
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.rfind("battlemode", 0) == 0 || line.rfind("battleMode", 0) == 0) {
+                lines.push_back("battlemode=" + std::to_string(m_battleMode));
+                found = true;
+            } else {
+                lines.push_back(line);
+            }
+        }
+    }
+    if (!found) {
+        lines.push_back("battlemode=" + std::to_string(m_battleMode));
+    }
+    std::ofstream out(configPath, std::ios::trunc);
+    if (!out.is_open()) out.open("kys_config.ini", std::ios::trunc);
+    if (!out.is_open()) return;
+    for (const auto& line : lines) out << line << '\n';
 }

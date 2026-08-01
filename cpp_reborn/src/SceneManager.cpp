@@ -425,26 +425,16 @@ void SceneManager::GetPositionOnScreen(int mapX, int mapY, int centerX, int cent
 bool SceneManager::CanWalk(int x, int y) {
     if (x < 0 || x >= SCENE_MAP_SIZE || y < 0 || y >= SCENE_MAP_SIZE) return false;
     
-    // Layer 1 check (Building/Obstacle)
+    // Align Pascal CanWalkInScene (kys_main.pas):
+    // Layer1 walkable when tile in [-2, 0]
     int16_t tile1 = GetSceneTile(m_currentSceneId, 1, x, y);
-    
-    // Logic from KYS:
-    // If tile1 > 0, it's an object/building.
-    // However, some objects are walkable?
-    // In original code, it checks if tile1 is 0.
-    // If tile1 != 0, it is blocked.
-    // UNLESS it's a special "overhead" tile which is drawn but walkable?
-    // But usually Layer 1 is collision layer.
-    
-    if (tile1 != 0) return false;
+    if (!(tile1 <= 0 && tile1 >= -2)) return false;
 
-    // Layer 3 check (Events)
+    // Layer3: eventId >= 0 and DData[0] (condition) == 1 blocks
     int16_t eventId = GetSceneTile(m_currentSceneId, 3, x, y);
-    if (eventId > 0) {
-        int16_t pic = GetEventData(m_currentSceneId, eventId, 5);
-        // If event has a picture, it is blocking (NPC, Chest, Object)
-        // If event is invisible (pic == 0), it is walkable (Trigger area)
-        if (pic != 0) return false;
+    if (eventId >= 0) {
+        int16_t condition = GetEventData(m_currentSceneId, eventId, 0);
+        if (condition == 1) return false;
     }
     
     // Layer 0 (Ground) checks
@@ -528,7 +518,7 @@ void SceneManager::RefreshEventLayer(int sceneId) {
         int16_t x = GetEventData(sceneId, e, 10);
         int16_t y = GetEventData(sceneId, e, 9);
         
-        if (x > 0 && x < SCENE_MAP_SIZE && y >= 0 && y < SCENE_MAP_SIZE) {
+        if (x >= 0 && x < SCENE_MAP_SIZE && y >= 0 && y < SCENE_MAP_SIZE) {
             SetSceneTile(sceneId, 3, x, y, (int16_t)e);
             count++;
         }
@@ -601,7 +591,7 @@ void SceneManager::InitialScene() {
         for (int e = 0; e < 200; ++e) {
             const int16_t x = GetEventData(sceneId, e, 10);
             const int16_t y = GetEventData(sceneId, e, 9);
-            if (x <= 0 || x >= SCENE_MAP_SIZE || y < 0 || y >= SCENE_MAP_SIZE) continue;
+            if (x < 0 || x >= SCENE_MAP_SIZE || y < 0 || y >= SCENE_MAP_SIZE) continue;
             if (GetSceneTile(sceneId, 3, x, y) < 0) {
                 SetSceneTile(sceneId, 3, x, y, static_cast<int16_t>(e));
                 ++eventsOnLayer;
@@ -622,7 +612,7 @@ void SceneManager::InitialScene() {
         ++ddataWithPic;
         const int16_t y = GetEventData(sceneId, e, 9);
         const int16_t x = GetEventData(sceneId, e, 10);
-        if (x > 0 && x < SCENE_MAP_SIZE && y >= 0 && y < SCENE_MAP_SIZE) {
+        if (x >= 0 && x < SCENE_MAP_SIZE && y >= 0 && y < SCENE_MAP_SIZE) {
             if (GetSceneTile(sceneId, 3, x, y) == e) {
                 ++layerWithPic;
             } else {
@@ -638,7 +628,7 @@ void SceneManager::InitialScene() {
         const int16_t pic7 = GetEventData(sceneId, e, 7);
         const int16_t y = GetEventData(sceneId, e, 9);
         const int16_t x = GetEventData(sceneId, e, 10);
-        const int16_t onMap = (x > 0 && y >= 0 && x < SCENE_MAP_SIZE && y < SCENE_MAP_SIZE)
+        const int16_t onMap = (x >= 0 && y >= 0 && x < SCENE_MAP_SIZE && y < SCENE_MAP_SIZE)
                                   ? GetSceneTile(sceneId, 3, x, y)
                                   : static_cast<int16_t>(-999);
         std::cout << "[InitialScene] ev" << e
@@ -712,7 +702,7 @@ void SceneManager::DrawWorldMap(SDL_Renderer* renderer, int centerX, int centerY
     int range = 20;
 
     // Draw Map Layers
-    // Order: Earth -> Surface -> Building -> Player -> Clouds
+    // Order: Earth -> Surface -> Buildings+Player (depth sorted) -> Clouds
     // Note: Earth/Surface should be drawn Back-to-Front (Small sum to Large sum) just like Buildings
     // to ensure proper occlusion if Surface contains standing objects.
 
@@ -770,21 +760,60 @@ void SceneManager::DrawWorldMap(SDL_Renderer* renderer, int centerX, int centerY
         }
     }
 
-    // 2. Draw Buildings (Sorted)
-    struct BuildingPos {
+    // 2. Draw Buildings + Player (sorted together — Pascal DrawMMap)
+    enum class WorldSpriteKind : uint8_t {
+        Building,
+        PlayerFoot,
+        PlayerShip,
+        EmptyShip
+    };
+    struct WorldDrawEntry {
         int mapX;
         int mapY;
         int16_t pic;
         int16_t width;
+        WorldSpriteKind kind;
     };
     struct CenterPos {
         int cx2;
         int cy2;
     };
 
-    BuildingPos buildingList[1200];
+    WorldDrawEntry drawList[1200];
     CenterPos centerList[1200];
-    int buildingCount = 0;
+    int drawCount = 0;
+
+    auto& game = GameManager::getInstance();
+    const int face = game.getMainMapFace();
+    int spriteFace = 0;
+    switch (face) {
+        case 0: spriteFace = 3; break;
+        case 1: spriteFace = 0; break;
+        case 2: spriteFace = 2; break;
+        case 3: spriteFace = 1; break;
+    }
+    const int frame = game.getWalkFrame();
+    const int16_t inShip = game.getInShip();
+    const int shipMapX = game.getShipY();
+    const int shipMapY = game.getShipX();
+
+    auto lookupMmpWidth = [&](int picNum) -> int16_t {
+        const int idxIndex = picNum - 1;
+        if (idxIndex < 0 || idxIndex >= (int)m_mmpIdxData.size()) return 36;
+        const int offset = m_mmpIdxData[idxIndex];
+        if (offset < 0 || offset + 2 > (int)m_mmpPicData.size()) return 36;
+        return static_cast<int16_t>(m_mmpPicData[offset] | (m_mmpPicData[offset + 1] << 8));
+    };
+
+    auto pushWorldSprite = [&](int mapX, int mapY, int16_t tempPic, WorldSpriteKind kind) {
+        if (drawCount >= 1200 || tempPic <= 0) return;
+        const int picNum = tempPic / 2;
+        const int16_t width = lookupMmpWidth(picNum);
+        drawList[drawCount] = {mapX, mapY, tempPic, width, kind};
+        centerList[drawCount].cx2 = mapX * 2 - (width + 35) / 36 + 1;
+        centerList[drawCount].cy2 = mapY * 2 - (width + 35) / 36 + 1;
+        drawCount++;
+    };
 
     for (int sum = -29; sum <= 41; ++sum) {
         for (int i = -16; i <= 16; ++i) {
@@ -802,52 +831,45 @@ void SceneManager::DrawWorldMap(SDL_Renderer* renderer, int centerX, int centerY
             if (!m_worldBuilding.empty()) {
                 tempPic = m_worldBuilding[idx];
             }
-            
-            // Check Referenced Building Layer (BuildX)
+
             if (tempPic == 0 && !m_worldBuildX.empty()) {
                 int16_t sceneId = m_worldBuildX[idx];
                 if (sceneId > 0 && sceneId < (int)m_scenes.size()) {
                     int16_t mapNum = m_scenes[sceneId].getMapNum();
                     if (mapNum > 0) {
-                        tempPic = mapNum * 2; 
+                        tempPic = mapNum * 2;
                     }
                 }
             }
 
-            int px, py;
-            GetPositionOnScreen(i1, i2, centerX, centerY, px, py);
-
-            if (tempPic > 0) {
-                int picNum = tempPic / 2;
-                int idxIndex = picNum - 1;
-                if (idxIndex >= 0 && idxIndex < (int)m_mmpIdxData.size() && buildingCount < 1200) {
-                    int offset = m_mmpIdxData[idxIndex];
-                    if (offset >= 0 && offset < (int)m_mmpPicData.size()) {
-                        int16_t width = 36;
-                        if (offset + 2 <= (int)m_mmpPicData.size()) {
-                            width = static_cast<int16_t>(m_mmpPicData[offset] | (m_mmpPicData[offset + 1] << 8));
-                        }
-                        buildingList[buildingCount].mapX = i1;
-                        buildingList[buildingCount].mapY = i2;
-                        buildingList[buildingCount].pic = tempPic;
-                        buildingList[buildingCount].width = width;
-                        centerList[buildingCount].cx2 = i1 * 2 - (width + 35) / 36 + 1;
-                        centerList[buildingCount].cy2 = i2 * 2 - (width + 35) / 36 + 1;
-                        buildingCount++;
-                    }
+            WorldSpriteKind kind = WorldSpriteKind::Building;
+            if (i1 == centerX && i2 == centerY) {
+                if (inShip == 1) {
+                    const int shipFrame = (frame + 1) / 2;
+                    tempPic = static_cast<int16_t>((3714 + spriteFace * 4 + shipFrame) * 2);
+                    kind = WorldSpriteKind::PlayerShip;
+                } else {
+                    tempPic = static_cast<int16_t>((2501 + spriteFace * 7 + frame) * 2);
+                    kind = WorldSpriteKind::PlayerFoot;
                 }
             }
+            if (i1 == shipMapX && i2 == shipMapY && inShip == 0) {
+                tempPic = static_cast<int16_t>((3715 + game.getShipFace() * 4) * 2);
+                kind = WorldSpriteKind::EmptyShip;
+            }
+
+            pushWorldSprite(i1, i2, tempPic, kind);
         }
     }
 
-    for (int i1 = 0; i1 < buildingCount - 1; ++i1) {
-        for (int i2 = i1 + 1; i2 < buildingCount; ++i2) {
+    for (int i1 = 0; i1 < drawCount - 1; ++i1) {
+        for (int i2 = i1 + 1; i2 < drawCount; ++i2) {
             int s1 = centerList[i1].cx2 + centerList[i1].cy2;
             int s2 = centerList[i2].cx2 + centerList[i2].cy2;
             if (s1 > s2) {
-                BuildingPos bp = buildingList[i1];
-                buildingList[i1] = buildingList[i2];
-                buildingList[i2] = bp;
+                WorldDrawEntry dp = drawList[i1];
+                drawList[i1] = drawList[i2];
+                drawList[i2] = dp;
                 CenterPos cp = centerList[i1];
                 centerList[i1] = centerList[i2];
                 centerList[i2] = cp;
@@ -855,46 +877,34 @@ void SceneManager::DrawWorldMap(SDL_Renderer* renderer, int centerX, int centerY
         }
     }
 
-    for (int idx = 0; idx < buildingCount; ++idx) {
-        int x = buildingList[idx].mapX;
-        int y = buildingList[idx].mapY;
-        int16_t picVal = buildingList[idx].pic;
+    for (int idx = 0; idx < drawCount; ++idx) {
+        const WorldDrawEntry& entry = drawList[idx];
         int sx, sy;
-        GetPositionOnScreen(x, y, centerX, centerY, sx, sy);
-        int picNum = picVal / 2;
-        int idxIndex = picNum - 1;
-        if (idxIndex >= 0 && idxIndex < (int)m_mmpIdxData.size()) {
-            int offset = m_mmpIdxData[idxIndex];
-            if (offset >= 0 && offset < (int)m_mmpPicData.size()) {
-                GraphicsUtils::DrawRLE8(GameManager::getInstance().getScreenSurface(), sx, sy,
-                                        &m_mmpPicData[offset], m_mmpPicData.size() - offset);
+        GetPositionOnScreen(entry.mapX, entry.mapY, centerX, centerY, sx, sy);
+        const int picNum = entry.pic / 2;
+        switch (entry.kind) {
+            case WorldSpriteKind::PlayerFoot:
+                DrawSmpSprite(renderer, picNum, sx, sy, 0);
+                break;
+            case WorldSpriteKind::PlayerShip:
+            case WorldSpriteKind::EmptyShip:
+                DrawMmapSprite(renderer, picNum, sx, sy, 0);
+                break;
+            case WorldSpriteKind::Building:
+            default: {
+                const int idxIndex = picNum - 1;
+                if (idxIndex >= 0 && idxIndex < (int)m_mmpIdxData.size()) {
+                    int offset = m_mmpIdxData[idxIndex];
+                    if (offset >= 0 && offset < (int)m_mmpPicData.size()) {
+                        GraphicsUtils::DrawRLE8(GameManager::getInstance().getScreenSurface(), sx, sy,
+                                                &m_mmpPicData[offset], m_mmpPicData.size() - offset);
+                    }
+                }
+                break;
             }
         }
     }
 
-    
-    // Draw Player
-    int screenX, screenY;
-    GetPositionOnScreen(centerX, centerY, centerX, centerY, screenX, screenY);
-
-    int face = GameManager::getInstance().getMainMapFace();
-    int spriteFace = 0;
-    switch(face) {
-         case 0: spriteFace = 3; break;
-         case 1: spriteFace = 0; break;
-         case 2: spriteFace = 2; break;
-         case 3: spriteFace = 1; break;
-    }
-    int frame = GameManager::getInstance().getWalkFrame();
-    if (GameManager::getInstance().getInShip() == 1) {
-        int shipFrame = (frame + 1) / 2;
-        int shipPic = 3714 + spriteFace * 4 + shipFrame;
-        DrawMmapSprite(renderer, shipPic, screenX, screenY, 0);
-    } else {
-        int playerPic = 2501 + spriteFace * 7 + frame;
-        DrawSmpSprite(renderer, playerPic, screenX, screenY, 0);
-    }
-    
     // Draw Clouds
     DrawClouds(renderer, centerX, centerY);
 }

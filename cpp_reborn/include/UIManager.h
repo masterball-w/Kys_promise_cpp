@@ -10,6 +10,13 @@
 
 class Role;
 
+struct BattleProgressEntry {
+    int headNum = -1;
+    int team = 0;
+    int progressMod = 0;
+    bool selected = false;
+};
+
 class UIManager {
 public:
     static UIManager& getInstance();
@@ -50,6 +57,7 @@ public:
     void SelectShowStatus();
     void ShowStatus(int roleId);
     void ShowSimpleStatus(int roleId, int x, int y, int frozen = 0);
+    void DrawBattleProgressBar(const std::vector<struct BattleProgressEntry>& entries, int barX, int barY);
     void DrawHpMpStatus(int roleId, int x, int y);
     void DrawEngShadowText(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize = 20);
     int ShowBattleItemMenu(const std::function<void()>& redrawBackground);
@@ -129,10 +137,19 @@ private:
     SDL_Texture* m_texBattle = nullptr;   // Index 8
     SDL_Texture* m_texTeammate = nullptr; // Index 9
     SDL_Texture* m_texMenuItem = nullptr; // Index 10
+    SDL_Texture* m_texProgressBar = nullptr;   // Game.Pic / Background.Pic 11
+    SDL_Texture* m_texMateSign = nullptr;      // 12
+    SDL_Texture* m_texEnemySign = nullptr;     // 13
+    SDL_Texture* m_texSelectedEnemy = nullptr; // 14
+    SDL_Texture* m_texSelectedMate = nullptr;  // 15
     
     SDL_Texture* m_texBeginBackground = nullptr; // Last frame of Begin.Pic
     SDL_Texture* m_texMenuBackground = nullptr; // Captured screen for transparency
+    SDL_Texture* m_texSaveLoadBg = nullptr; // Optional: resource/ui/saveload_bg.png
+    bool m_saveLoadBgChecked = false;
     std::vector<SkillIcon> m_skillIcons;
+
+    void EnsureSaveLoadBackground();
 
     // Helper to load texture from surface and free surface
     SDL_Texture* LoadTextureFromPic(const std::string& filename, int index);

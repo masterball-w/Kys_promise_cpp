@@ -2,6 +2,7 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <algorithm>
 #include <SDL3/SDL.h>
 #include <array>
 #include <cstdint>
@@ -146,8 +147,13 @@ public:
     int getGameSpeed() const { return m_gameSpeed; }
     void setGameSpeed(int speed) { m_gameSpeed = std::max(1, speed); }
     int16_t getInShip() const { return m_inShip; }
+    int16_t getShipX() const { return m_shipX; }
+    int16_t getShipY() const { return m_shipY; }
+    int16_t getShipFace() const { return m_shipFace; }
     int getBattleMode() const { return m_battleMode; }
-    void setBattleMode(int mode) { m_battleMode = mode; }
+    void setBattleMode(int mode) { m_battleMode = std::min(2, std::max(0, mode)); }
+    void loadSettings();
+    void saveBattleModeSetting();
     int16_t getGameTime() const { return m_gameTime; }
     void setGameTime(int16_t time) { m_gameTime = time; }
     void ReturnToTitleScreen();

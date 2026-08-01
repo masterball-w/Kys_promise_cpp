@@ -13,6 +13,7 @@
 #include "FileLoader.h"
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
+#include <SDL3_image/SDL_image.h>
 #include "VirtualControls.h"
 #include <iostream>
 #include <cmath>
@@ -283,7 +284,16 @@ void UIManager::Cleanup() {
     if (m_texBattle) SDL_DestroyTexture(m_texBattle);
     if (m_texTeammate) SDL_DestroyTexture(m_texTeammate);
     if (m_texMenuItem) SDL_DestroyTexture(m_texMenuItem);
+    if (m_texProgressBar) SDL_DestroyTexture(m_texProgressBar);
+    if (m_texMateSign) SDL_DestroyTexture(m_texMateSign);
+    if (m_texEnemySign) SDL_DestroyTexture(m_texEnemySign);
+    if (m_texSelectedEnemy) SDL_DestroyTexture(m_texSelectedEnemy);
+    if (m_texSelectedMate) SDL_DestroyTexture(m_texSelectedMate);
     if (m_texMenuBackground) SDL_DestroyTexture(m_texMenuBackground);
+    if (m_texSaveLoadBg) SDL_DestroyTexture(m_texSaveLoadBg);
+    m_texMenuBackground = nullptr;
+    m_texSaveLoadBg = nullptr;
+    m_saveLoadBgChecked = false;
     ClearSkillIcons();
     
     TTF_Quit();
@@ -299,7 +309,7 @@ SDL_Color UIManager::Uint32ToColor(uint32_t color) {
 }
 
 bool UIManager::LoadSystemGraphics() {
-    if (m_texTitle) return true; 
+    if (m_texTitle && m_texProgressBar && m_texMateSign && m_texEnemySign) return true;
 
     auto loadTex = [&](int index) -> SDL_Texture* {
         PicImage pic = PicLoader::loadPic("resource/Background.Pic", index);
@@ -325,6 +335,11 @@ bool UIManager::LoadSystemGraphics() {
     m_texBattle = loadTex(8);
     m_texTeammate = loadTex(9);
     m_texMenuItem = loadTex(10);
+    m_texProgressBar = loadTex(11);
+    m_texMateSign = loadTex(12);
+    m_texEnemySign = loadTex(13);
+    m_texSelectedEnemy = loadTex(14);
+    m_texSelectedMate = loadTex(15);
     
     return true;
 }
@@ -382,18 +397,58 @@ void UIManager::CaptureScreen() {
         SDL_DestroyTexture(m_texMenuBackground);
         m_texMenuBackground = nullptr;
     }
+
+    auto isMostlyBlack = [](SDL_Surface* surface) -> bool {
+        if (!surface || surface->w <= 0 || surface->h <= 0) return true;
+        int nonBlack = 0;
+        const int samples[][2] = {
+            {surface->w / 4, surface->h / 4},
+            {surface->w / 2, surface->h / 2},
+            {surface->w * 3 / 4, surface->h * 3 / 4},
+            {surface->w / 5, surface->h * 4 / 5},
+            {surface->w * 4 / 5, surface->h / 5}
+        };
+        for (const auto& sample : samples) {
+            Uint8 r = 0, g = 0, b = 0, a = 255;
+            if (!SDL_ReadSurfacePixel(surface, sample[0], sample[1], &r, &g, &b, &a)) continue;
+            if (r > 8 || g > 8 || b > 8) ++nonBlack;
+        }
+        return nonBlack == 0;
+    };
+
     SDL_Surface* surface = GameManager::getInstance().getScreenSurface();
-    if (surface) {
+    if (surface && !isMostlyBlack(surface)) {
         m_texMenuBackground = SDL_CreateTextureFromSurface(m_renderer, surface);
         if (m_texMenuBackground) {
             SDL_SetTextureBlendMode(m_texMenuBackground, SDL_BLENDMODE_NONE);
         }
         return;
     }
+
     SDL_Surface* readback = SDL_RenderReadPixels(m_renderer, NULL);
     if (readback) {
         m_texMenuBackground = SDL_CreateTextureFromSurface(m_renderer, readback);
+        if (m_texMenuBackground) {
+            SDL_SetTextureBlendMode(m_texMenuBackground, SDL_BLENDMODE_NONE);
+        }
         SDL_DestroySurface(readback);
+    }
+}
+
+void UIManager::EnsureSaveLoadBackground() {
+    if (m_saveLoadBgChecked) return;
+    m_saveLoadBgChecked = true;
+    const std::string path = FileLoader::getResourcePath("resource/ui/saveload_bg.png");
+    SDL_Surface* surf = IMG_Load(path.c_str());
+    if (!surf) {
+        std::cout << "[UIManager] Optional save/load bg not found: " << path << std::endl;
+        return;
+    }
+    m_texSaveLoadBg = SDL_CreateTextureFromSurface(m_renderer, surf);
+    SDL_DestroySurface(surf);
+    if (m_texSaveLoadBg) {
+        SDL_SetTextureBlendMode(m_texSaveLoadBg, SDL_BLENDMODE_NONE);
+        std::cout << "[UIManager] Loaded save/load bg: " << path << std::endl;
     }
 }
 
@@ -518,7 +573,12 @@ void UIManager::DrawItemPicWithOffset(int itemId, int x, int y) {
     PicImage pic = PicLoader::loadPic("resource/Items.Pic", itemId);
     if (pic.surface) {
          SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, pic.surface);
-         // Apply offset like Pascal: x1 := px - image.x; y1 := py - image.y;
+         if (!tex) {
+             PicLoader::freePic(pic);
+             return;
+         }
+         SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+         // Pascal drawPngPic: x1 := px - image.x; y1 := py - image.y;
          float drawX = (float)(x - pic.x);
          float drawY = (float)(y - pic.y);
          SDL_FRect dest = { drawX, drawY, (float)pic.surface->w, (float)pic.surface->h };
@@ -757,6 +817,43 @@ void UIManager::ShowSimpleStatus(int roleId, int x, int y, int frozen) {
     DrawHpMpStatus(roleId, panelX + 77, panelY + 5);
 }
 
+void UIManager::DrawBattleProgressBar(const std::vector<BattleProgressEntry>& entries, int barX, int barY) {
+    if (!m_texProgressBar) LoadSystemGraphics();
+    if (!m_texProgressBar) return;
+
+    SDL_FRect barDest = { (float)barX, (float)barY, 0.f, 0.f };
+    float tw = 0.f, th = 0.f;
+    SDL_GetTextureSize(m_texProgressBar, &tw, &th);
+    barDest.w = tw;
+    barDest.h = th;
+    SDL_RenderTexture(m_renderer, m_texProgressBar, NULL, &barDest);
+
+    std::vector<int> order(entries.size());
+    for (size_t i = 0; i < entries.size(); ++i) order[i] = (int)i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return entries[a].progressMod > entries[b].progressMod;
+    });
+
+    for (int idx : order) {
+        const BattleProgressEntry& e = entries[idx];
+        if (e.headNum < 0) continue;
+        const int signX = barX + 20 + e.progressMod;
+        SDL_Texture* signTex = nullptr;
+        if (e.team == 0) {
+            signTex = e.selected ? m_texSelectedMate : m_texMateSign;
+        } else {
+            signTex = e.selected ? m_texSelectedEnemy : m_texEnemySign;
+        }
+        if (signTex) {
+            SDL_FRect signDest = { (float)signX, (float)barY, 0.f, 0.f };
+            SDL_GetTextureSize(signTex, &signDest.w, &signDest.h);
+            SDL_RenderTexture(m_renderer, signTex, NULL, &signDest);
+        }
+        const int headY = (e.team == 0) ? barY - 30 : barY + 30;
+        DrawHead(e.headNum, signX - 10, headY);
+    }
+}
+
 namespace {
     // Battle item panel is shifted left so it aligns with the 640-wide battle view under TTF rendering.
     constexpr int kBattleItemShiftX = -30;
@@ -928,9 +1025,16 @@ void UIManager::ShowStatus(int roleId) {
     }
 
     StatusPulse pulse = ComputeStatusPulse(role.getPoision(), role.getHurt(), 0);
-    DrawHead(role.getHeadNum(), 137, 88 + headOffsetY, pulse.green, pulse.red, pulse.gray);
+    DrawHead(role.getHeadNum(), 137, 88, pulse.green, pulse.red, pulse.gray);
+
+    // Pascal NewShowStatus: draw equipment icons onto background slots before overlay text.
+    if (role.getEquip(0) >= 0) DrawItemPicWithOffset(role.getEquip(0), 411, 144);
+    if (role.getEquip(1) >= 0) DrawItemPicWithOffset(role.getEquip(1), 523, 144);
+    if (role.getEquip(2) >= 0) DrawItemPicWithOffset(role.getEquip(2), 466, 42);
+    if (role.getEquip(3) >= 0) DrawItemPicWithOffset(role.getEquip(3), 466, 318);
+
     std::string roleNameUtf8 = TextManager::getInstance().gbkToUtf8(role.getName());
-    DrawShadowTextUtf8(roleNameUtf8, 115 + textOffsetX, 93 + textOffsetY, 0x64FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(roleNameUtf8, 115, 93, 0x64FFFFFF, 0x66FFFFFF);
  
     int x = 90;
     int y = 0;
@@ -1034,44 +1138,40 @@ void UIManager::ShowStatus(int roleId) {
     DrawShadowTextUtf8("/100", hpBaseX + 165 + textOffsetX, hpBaseY + 63 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
     DrawStatusBar(hpBaseX + 65 + textOffsetX, hpBaseY + 64 + textOffsetY, role.getPhyPower(), MAX_PHYSICAL_POWER, 0x46);
  
-    DrawShadowTextUtf8(" 武器", x + 190 + textOffsetX, y + 115 + 21 * 9 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+    DrawShadowTextUtf8(" 武器", x + 190, y + 115 + 21 * 9, 0x05FFFFFF, 0x07FFFFFF);
     if (role.getEquip(0) >= 0) {
         Item& item = GameManager::getInstance().getItem(role.getEquip(0));
         std::string itemNameUtf8 = TextManager::getInstance().gbkToUtf8(item.getName());
-        DrawShadowTextUtf8(itemNameUtf8, x + 240 + textOffsetX, y + 115 + 21 * 9 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-        DrawItemPicWithOffset(role.getEquip(0), 411, 144);
+        DrawShadowTextUtf8(itemNameUtf8, x + 240, y + 115 + 21 * 9, 0x63FFFFFF, 0x66FFFFFF);
     } else {
-        DrawShadowTextUtf8(" 無", x + 240 + textOffsetX, y + 115 + 21 * 9 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
+        DrawShadowTextUtf8(" 無", x + 240, y + 115 + 21 * 9, 0x63FFFFFF, 0x66FFFFFF);
     }
- 
-    DrawShadowTextUtf8(" 身披", x + 190 + textOffsetX, y + 115 + 21 * 10 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+
+    DrawShadowTextUtf8(" 身披", x + 190, y + 115 + 21 * 10, 0x05FFFFFF, 0x07FFFFFF);
     if (role.getEquip(1) >= 0) {
         Item& item = GameManager::getInstance().getItem(role.getEquip(1));
         std::string itemNameUtf8 = TextManager::getInstance().gbkToUtf8(item.getName());
-        DrawShadowTextUtf8(itemNameUtf8, x + 240 + textOffsetX, y + 115 + 21 * 10 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-        DrawItemPicWithOffset(role.getEquip(1), 523, 144);
+        DrawShadowTextUtf8(itemNameUtf8, x + 240, y + 115 + 21 * 10, 0x63FFFFFF, 0x66FFFFFF);
     } else {
-        DrawShadowTextUtf8(" 無", x + 240 + textOffsetX, y + 115 + 21 * 10 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
+        DrawShadowTextUtf8(" 無", x + 240, y + 115 + 21 * 10, 0x63FFFFFF, 0x66FFFFFF);
     }
- 
-    DrawShadowTextUtf8(" 頭戴", x + 190 + textOffsetX, y + 115 + 21 * 11 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+
+    DrawShadowTextUtf8(" 頭戴", x + 190, y + 115 + 21 * 11, 0x05FFFFFF, 0x07FFFFFF);
     if (role.getEquip(2) >= 0) {
         Item& item = GameManager::getInstance().getItem(role.getEquip(2));
         std::string itemNameUtf8 = TextManager::getInstance().gbkToUtf8(item.getName());
-        DrawShadowTextUtf8(itemNameUtf8, x + 240 + textOffsetX, y + 115 + 21 * 11 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-        DrawItemPicWithOffset(role.getEquip(2), 466, 42);
+        DrawShadowTextUtf8(itemNameUtf8, x + 240, y + 115 + 21 * 11, 0x63FFFFFF, 0x66FFFFFF);
     } else {
-        DrawShadowTextUtf8(" 無", x + 240 + textOffsetX, y + 115 + 21 * 11 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
+        DrawShadowTextUtf8(" 無", x + 240, y + 115 + 21 * 11, 0x63FFFFFF, 0x66FFFFFF);
     }
- 
-    DrawShadowTextUtf8(" 腳踩", x + 190 + textOffsetX, y + 115 + 21 * 12 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+
+    DrawShadowTextUtf8(" 腳踩", x + 190, y + 115 + 21 * 12, 0x05FFFFFF, 0x07FFFFFF);
     if (role.getEquip(3) >= 0) {
         Item& item = GameManager::getInstance().getItem(role.getEquip(3));
         std::string itemNameUtf8 = TextManager::getInstance().gbkToUtf8(item.getName());
-        DrawShadowTextUtf8(itemNameUtf8, x + 240 + textOffsetX, y + 115 + 21 * 12 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-        DrawItemPicWithOffset(role.getEquip(3), 466, 318);
+        DrawShadowTextUtf8(itemNameUtf8, x + 240, y + 115 + 21 * 12, 0x63FFFFFF, 0x66FFFFFF);
     } else {
-        DrawShadowTextUtf8(" 無", x + 240 + textOffsetX, y + 115 + 21 * 12 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
+        DrawShadowTextUtf8(" 無", x + 240, y + 115 + 21 * 12, 0x63FFFFFF, 0x66FFFFFF);
     }
 }
 
@@ -1915,6 +2015,13 @@ int UIManager::SelectItemUser(int menuSelection, int selectedIndex, int itemId, 
     }
 }
 
+namespace {
+constexpr int kSysMenuLabelX = 112;
+constexpr int kSysMenuRowY0 = 30;
+constexpr int kSysMenuRowStep = 84;
+constexpr int kSysSubMenuY0 = 48;
+}
+
 void UIManager::SelectShowSystem() {
     bool running = true;
     int currentSelection = 0;
@@ -1937,17 +2044,28 @@ void UIManager::SelectShowSystem() {
                     }
                 } else if (subMenu < 0) {
                     if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
-                        currentSelection = (currentSelection + 1) % 4;
+                        currentSelection = (currentSelection + 1) % 5;
                     } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
-                        currentSelection = (currentSelection + 3) % 4;
+                        currentSelection = (currentSelection + 4) % 5;
                     } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
-                        subMenu = currentSelection;
-                        if (subMenu == 0 || subMenu == 1) {
-                            subSelection = 0;
-                        } else if (subMenu == 2) {
-                            subSelection = SoundManager::getInstance().GetMusicVolumeLevel();
-                        } else if (subMenu == 3) {
-                            subSelection = -1;
+                        // Pascal: battle mode uses a popup commonmenu, not an inline submenu.
+                        if (currentSelection == 3) {
+                            std::vector<std::string> modes = { " 回合制", " 半即時" };
+                            int menu = CommonMenu(230, kSysMenuRowY0 + kSysMenuRowStep * 3, 90, modes);
+                            if (menu >= 0) {
+                                GameManager::getInstance().setBattleMode(menu * 2);
+                                GameManager::getInstance().saveBattleModeSetting();
+                                ShowDialogue(menu == 0 ? "已切換為回合制" : "已切換為半即時", 0, 0);
+                            }
+                        } else {
+                            subMenu = currentSelection;
+                            if (subMenu == 0 || subMenu == 1) {
+                                subSelection = 0;
+                            } else if (subMenu == 2) {
+                                subSelection = SoundManager::getInstance().GetMusicVolumeLevel();
+                            } else if (subMenu == 4) {
+                                subSelection = 0;
+                            }
                         }
                     }
                 } else {
@@ -1986,7 +2104,7 @@ void UIManager::SelectShowSystem() {
                         } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
                             SoundManager::getInstance().SetMusicVolumeLevel(subSelection);
                         }
-                    } else if (subMenu == 3) {
+                    } else if (subMenu == 4) {
                         int maxSlot = 2;
                         if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_KP_6) {
                             subSelection = (subSelection + 1) % maxSlot;
@@ -2011,20 +2129,20 @@ void UIManager::SelectShowSystem() {
                     if (subMenu == 0) width = 81;
                     else if (subMenu == 1) width = 97;
                     int startX = 118;
-                    int startY = 50 + 101 * subMenu;
+                    int startY = kSysSubMenuY0 + kSysMenuRowStep * subMenu;
                     if (ym >= startY && ym < startY + 25) {
                         int idx = (int)((xm - startX) / width);
                         int maxSlot = 9;
                         if (subMenu == 0) maxSlot = 6;
                         else if (subMenu == 1) maxSlot = 5;
-                        else if (subMenu == 3) maxSlot = 2;
+                        else if (subMenu == 4) maxSlot = 2;
                         if (idx >= 0 && idx < maxSlot) {
                             subSelection = idx;
                         }
                     }
                 } else {
-                    for (int i = 0; i < 4; ++i) {
-                        int startY = 25 + 101 * i;
+                    for (int i = 0; i < 5; ++i) {
+                        int startY = kSysMenuRowY0 + kSysMenuRowStep * i;
                         if (ym >= startY && ym < startY + 25 && xm >= 112 && xm < 500) {
                             currentSelection = i;
                             break;
@@ -2047,7 +2165,7 @@ void UIManager::SelectShowSystem() {
                         if (subMenu == 0) width = 81;
                         else if (subMenu == 1) width = 97;
                         int startX = 118;
-                        int startY = 50 + 101 * subMenu;
+                        int startY = kSysSubMenuY0 + kSysMenuRowStep * subMenu;
                         if (ym >= startY && ym < startY + 25 && xm >= startX) {
                             if (subMenu == 0) {
                                 int slot = (subSelection == 5) ? 6 : (subSelection + 1);
@@ -2061,7 +2179,7 @@ void UIManager::SelectShowSystem() {
                                 ShowDialogue("進度已保存", 0, 0);
                             } else if (subMenu == 2) {
                                 SoundManager::getInstance().SetMusicVolumeLevel(subSelection);
-                            } else if (subMenu == 3) {
+                            } else if (subMenu == 4) {
                                 if (subSelection == 1) {
                                     GameManager::getInstance().Quit();
                                     return;
@@ -2071,16 +2189,27 @@ void UIManager::SelectShowSystem() {
                             }
                         }
                     } else {
-                        for (int i = 0; i < 4; ++i) {
-                            int startY = 25 + 101 * i;
+                        for (int i = 0; i < 5; ++i) {
+                            int startY = kSysMenuRowY0 + kSysMenuRowStep * i;
                             if (ym >= startY && ym < startY + 25 && xm >= 112 && xm < 500) {
-                                subMenu = i;
-                                if (subMenu == 0 || subMenu == 1) {
-                                    subSelection = 0;
-                                } else if (subMenu == 2) {
-                                    subSelection = SoundManager::getInstance().GetMusicVolumeLevel();
-                                } else if (subMenu == 3) {
-                                    subSelection = -1;
+                                currentSelection = i;
+                                if (i == 3) {
+                                    std::vector<std::string> modes = { " 回合制", " 半即時" };
+                                    int menu = CommonMenu(230, kSysMenuRowY0 + kSysMenuRowStep * 3, 90, modes);
+                                    if (menu >= 0) {
+                                        GameManager::getInstance().setBattleMode(menu * 2);
+                                        GameManager::getInstance().saveBattleModeSetting();
+                                        ShowDialogue(menu == 0 ? "已切換為回合制" : "已切換為半即時", 0, 0);
+                                    }
+                                } else {
+                                    subMenu = i;
+                                    if (subMenu == 0 || subMenu == 1) {
+                                        subSelection = 0;
+                                    } else if (subMenu == 2) {
+                                        subSelection = SoundManager::getInstance().GetMusicVolumeLevel();
+                                    } else if (subMenu == 4) {
+                                        subSelection = 0;
+                                    }
                                 }
                                 break;
                             }
@@ -2106,16 +2235,18 @@ void UIManager::ShowSystem(int selectedIndex, int subMenu, int subSelection) {
         SDL_RenderTexture(m_renderer, m_texSystem, NULL, NULL);
     }
 
+    const bool atb = GameManager::getInstance().getBattleMode() > 0;
     const char* labels[] = {
         " ——————————讀取進度——————————",
         " ——————————保存進度——————————",
         " ——————————音樂音量——————————",
+        atb ? " ——————————戰鬥模式：半即時——" : " ——————————戰鬥模式：回合制——",
         " ——————————退出離開——————————"
     };
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         uint32_t color = (i == selectedIndex) ? 0xFFFFFFFF : 0xAAAAAAFF;
-        DrawShadowTextUtf8(labels[i], 112, 25 + 110 * i, color, 0x000000FF);
+        DrawShadowTextUtf8(labels[i], kSysMenuLabelX, kSysMenuRowY0 + kSysMenuRowStep * i, color, 0x000000FF);
     }
 
     if (subMenu >= 0) {
@@ -2134,7 +2265,7 @@ void UIManager::ShowSystem(int selectedIndex, int subMenu, int subSelection) {
                 " 零", " 一", " 二", " 三", " 四", " 五", " 六", " 七", " 八"
             };
             ShowSelect(subMenu, subSelection, words, 56);
-        } else if (subMenu == 3) {
+        } else if (subMenu == 4) {
             std::vector<std::string> words = {
                 " 取消", " 退出"
             };
@@ -2146,7 +2277,7 @@ void UIManager::ShowSystem(int selectedIndex, int subMenu, int subSelection) {
 void UIManager::ShowSelect(int row, int menu, const std::vector<std::string>& words, int width) {
     for (size_t i = 0; i < words.size(); ++i) {
         int x = 118 + width * (int)i;
-        int y = 50 + 110 * row;
+        int y = kSysSubMenuY0 + kSysMenuRowStep * row;
         if ((int)i == menu) {
             DrawShadowTextUtf8(words[i], x + 1, y, 0x64FFFFFF, 0x66FFFFFF);
         } else {
@@ -3048,13 +3179,115 @@ void UIManager::DrawCharacterCreationNamePrompt(const std::string& nameUtf8) {
     DrawShadowTextUtf8(nameUtf8.empty() ? " " : nameUtf8, 200, 210, 0xFFFFFFFF, 0x000000FF);
 }
 
+namespace {
+    // Pascal kys_main.pas ShowStatus + ShowRandomAttribute (CENTER_Y=220)
+    void DrawCharacterCreationStatusPanel(UIManager& ui, const Role& role) {
+        constexpr int kCenterY = 220;
+        const int x = 40;
+        const int y = kCenterY - 160;
+        auto& game = GameManager::getInstance();
+
+        ui.DrawRectangle(x, y, 560, 315, 0, PaletteIndexColor(255), 50);
+
+        ui.DrawHead(role.getHeadNum(), x + 60, y + 80);
+        const std::string nameGbk = role.getName();
+        const int nameX = x + 68 - static_cast<int>(nameGbk.size()) * 5;
+        ui.DrawShadowTextUtf8(TextManager::getInstance().gbkToUtf8(nameGbk), nameX, y + 85, 0x64FFFFFF, 0x66FFFFFF);
+
+        static const char* kLeftLabels[] = {" 等級", " 生命", " 內力", " 體力", " 經驗", " 升級"};
+        for (int i = 0; i < 6; ++i) {
+            ui.DrawShadowTextUtf8(kLeftLabels[i], x - 10, y + 110 + 21 * i, 0x21FFFFFF, 0x23FFFFFF);
+        }
+        static const char* kRightLabels[] = {
+            " 攻擊", " 防禦", " 輕功", " 醫療能力", " 用毒能力", " 解毒能力",
+            " 拳掌功夫", " 御劍能力", " 耍刀技巧", " 奇門兵器", " 暗器技巧"
+        };
+        for (int i = 0; i < 11; ++i) {
+            ui.DrawShadowTextUtf8(kRightLabels[i], x + 160, y + 5 + 21 * i, 0x64FFFFFF, 0x66FFFFFF);
+        }
+        ui.DrawShadowTextUtf8(" 所會武功", x + 360, y + 5, 0x21FFFFFF, 0x23FFFFFF);
+
+        int addAtk = 0, addDef = 0, addSpeed = 0;
+        for (int i = 0; i < 4; ++i) {
+            const int itemId = role.getEquip(i);
+            if (itemId < 0) continue;
+            Item& item = game.getItem(itemId);
+            addAtk += item.getAddAttack();
+            addDef += item.getAddDefence();
+            addSpeed += item.getAddSpeed();
+        }
+
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getAttack() + addAtk, 4), x + 300, y + 5, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getDefence() + addDef, 4), x + 300, y + 26, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getSpeed() + addSpeed, 4), x + 300, y + 47, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getMedcine(), 4), x + 300, y + 68, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getUsePoi(), 4), x + 300, y + 89, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getMedPoi(), 4), x + 300, y + 110, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getFist(), 4), x + 300, y + 131, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getSword(), 4), x + 300, y + 152, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getKnife(), 4), x + 300, y + 173, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getUnusual(), 4), x + 300, y + 194, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getHidWeapon(), 4), x + 300, y + 215, 0x05FFFFFF, 0x07FFFFFF);
+
+        for (int i = 0; i < 10; ++i) {
+            const int magicId = role.getMagic(i);
+            if (magicId <= 0) continue;
+            Magic& magic = game.getMagic(magicId);
+            ui.DrawShadowTextUtf8(TextManager::getInstance().gbkToUtf8(magic.getName()), x + 360, y + 26 + 21 * i, 0x05FFFFFF, 0x07FFFFFF);
+            ui.DrawEngShadowText(FormatPaddedNumber(role.getMagLevel(i) / 100 + 1, 3), x + 520, y + 26 + 21 * i, 0x64FFFFFF, 0x66FFFFFF);
+        }
+
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getLevel(), 4), x + 110, y + 110, 0x05FFFFFF, 0x07FFFFFF);
+
+        uint32_t hpCur1 = 0, hpCur2 = 0, hpMax1 = 0, hpMax2 = 0;
+        ResolveHpColors(role, hpCur1, hpCur2, hpMax1, hpMax2);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getCurrentHP(), 4), x + 60, y + 131, hpCur1, hpCur2);
+        ui.DrawEngShadowText("/", x + 100, y + 131, 0x64FFFFFF, 0x66FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getMaxHP(), 4), x + 110, y + 131, hpMax1, hpMax2);
+
+        uint32_t mp1 = 0x63FFFFFF, mp2 = 0x66FFFFFF;
+        if (role.getMPType() == 1) {
+            mp1 = 0x4EFFFFFF;
+            mp2 = 0x50FFFFFF;
+        } else if (role.getMPType() == 0) {
+            mp1 = 0x05FFFFFF;
+            mp2 = 0x07FFFFFF;
+        }
+        ui.DrawEngShadowText(
+            FormatPaddedNumber(role.getCurrentMP(), 4) + "/" + FormatPaddedNumber(role.getMaxMP(), 4),
+            x + 60, y + 152, mp1, mp2);
+        ui.DrawEngShadowText(
+            FormatPaddedNumber(role.getPhyPower(), 4) + "/" + std::to_string(MAX_PHYSICAL_POWER),
+            x + 60, y + 173, 0x05FFFFFF, 0x07FFFFFF);
+        ui.DrawEngShadowText(FormatPaddedNumber(role.getExp(), 5), x + 100, y + 194, 0x05FFFFFF, 0x07FFFFFF);
+        if (role.getLevel() >= 30) {
+            ui.DrawEngShadowText("=", x + 100, y + 215, 0x05FFFFFF, 0x07FFFFFF);
+        } else {
+            ui.DrawEngShadowText(FormatPaddedNumber(game.getNextLevelExp(role.getLevel()), 5), x + 100, y + 215, 0x05FFFFFF, 0x07FFFFFF);
+        }
+
+        ui.DrawShadowTextUtf8(" 裝備物品", x + 160, y + 240, 0x21FFFFFF, 0x23FFFFFF);
+        ui.DrawShadowTextUtf8(" 修煉物品", x + 360, y + 240, 0x21FFFFFF, 0x23FFFFFF);
+        if (role.getEquip(0) >= 0) {
+            Item& item = game.getItem(role.getEquip(0));
+            ui.DrawShadowTextUtf8(TextManager::getInstance().gbkToUtf8(item.getName()), x + 170, y + 261, 0x05FFFFFF, 0x07FFFFFF);
+        }
+        if (role.getEquip(1) >= 0) {
+            Item& item = game.getItem(role.getEquip(1));
+            ui.DrawShadowTextUtf8(TextManager::getInstance().gbkToUtf8(item.getName()), x + 170, y + 282, 0x05FFFFFF, 0x07FFFFFF);
+        }
+    }
+}
+
 void UIManager::DrawCharacterCreationAttributes(const Role& role) {
-    (void)role;
-    // Reuse status panel layout; tip bar at bottom (Pascal ShowRandomAttribute)
-    ShowStatus(0);
-    DrawShadowTextUtf8(" 資質", 30, 380, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().getRole(0).getAptitude()), 150, 380, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8(" 選定屬性後按回車，任意鍵重骰，Esc 返回", 210, 380, 0x05FFFFFF, 0x07FFFFFF);
+    DrawTitleBackground();
+    DrawCharacterCreationStatusPanel(*this, role);
+
+    constexpr int kCenterY = 220;
+    const int tipY = kCenterY + 111;
+    DrawShadowTextUtf8(" 資質", 30, tipY, 0x21FFFFFF, 0x23FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(role.getAptitude(), 4), 150, tipY, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 選定屬性後按回車，任意鍵重骰，Esc 返回", 210, tipY, 0x05FFFFFF, 0x07FFFFFF);
 }
 
 void UIManager::DrawTitleScreen() {
@@ -3128,7 +3361,11 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
     // Align with Pascal:
     //   MenuLoadAtBeginning -> CommonMenu(265, 280, 107, 5)  vertical
     //   MenuSave            -> CommonMenu(133, 30, 67, 4)    vertical
-    CaptureScreen();
+    EnsureSaveLoadBackground();
+    // Prefer dedicated bg / title art; only capture when neither is available.
+    if (!m_texSaveLoadBg && !m_texBeginBackground) {
+        CaptureScreen();
+    }
 
     bool running = true;
     int currentSelection = 0;
@@ -3208,12 +3445,15 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
             confirmSelection();
         }
 
+        SDL_SetRenderDrawColor(m_renderer, 50, 50, 50, 255);
         SDL_RenderClear(m_renderer);
-        if (m_texMenuBackground) {
+        if (m_texSaveLoadBg) {
+            SDL_FRect dest = logicalFullscreenRect();
+            SDL_RenderTexture(m_renderer, m_texSaveLoadBg, NULL, &dest);
+        } else if (m_texBeginBackground) {
+            DrawTitleBackground();
+        } else if (m_texMenuBackground) {
             SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
-        } else {
-            SDL_SetRenderDrawColor(m_renderer, 50, 50, 50, 255);
-            SDL_RenderClear(m_renderer);
         }
 
         DrawRectangle(menuX, menuY, menuW, menuH, 0, 0xFFFFFFFF, 30);
@@ -4071,10 +4311,11 @@ void UIManager::ShowItemNotification(int itemId, int amount) {
             GameManager::getInstance().RenderScreenTo(m_renderer);
         }
 
-        int boxW = 260;
-        int boxH = 140;
-        int boxX = (w - boxW) / 2;
-        int boxY = (h - boxH) / 2;
+        const int amountRowY = 35 + picH + 30;
+        const int boxW = 260;
+        const int boxH = std::max(140, amountRowY + 24 + 16);
+        const int boxX = (w - boxW) / 2;
+        const int boxY = (h - boxH) / 2;
         DrawRectangle(boxX, boxY, boxW, boxH, 0x000000CC, 0xFFFFFFFF, 200);
 
         DrawShadowTextUtf8(title, boxX + 12, boxY + 10, 0xFFFF00FF, 0x000000FF);
@@ -4083,8 +4324,8 @@ void UIManager::ShowItemNotification(int itemId, int amount) {
             SDL_RenderTexture(m_renderer, itemTex, NULL, &dest);
         }
         DrawShadowTextUtf8(nameUtf8, boxX + 12, boxY + 35 + picH + 6, 0xFFFFFFFF, 0x000000FF);
-        DrawShadowTextUtf8(" 數量", boxX + 12, boxY + 35 + picH + 30, 0xFFFF00FF, 0x000000FF);
-        DrawShadowTextUtf8(std::to_string(showAmount), boxX + 70, boxY + 35 + picH + 30, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(" 數量", boxX + 12, boxY + amountRowY, 0xFFFF00FF, 0x000000FF);
+        DrawShadowTextUtf8(std::to_string(showAmount), boxX + 70, boxY + amountRowY, 0xFFFFFFFF, 0x000000FF);
 
         VirtualControls::present(m_renderer);
         SDL_Delay(16);

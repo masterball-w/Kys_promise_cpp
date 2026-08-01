@@ -115,6 +115,18 @@ private:
 
     int CountProgress();
     void CalMoveAbility();
+    void ReArrangeBRole();
+    void ShowProgress();
+    void UpdateMaxSpeed();
+    void RunTurnBasedBattle();
+    void RunAtbBattle();
+    bool ProcessActorTurn(int actorIdx);
+    bool CheckBattleEnd();
+    void PollBattleInput();
+    void DeductActionProgress(BattleRole& actor);
+    void UnlockOneWaiter(int exceptIdx);
+    void ClearDeadRolePic();
+    void MoveAnimation(int roleIdx, int targetX, int targetY);
     void AddExp();
     void CheckLevelUp();
     void RestoreRoleStatus();
@@ -128,6 +140,7 @@ private:
     // UI Helpers
     void ShowBMenu(int menuStatus, int menu, int max);
     void RenderBattle(); // Draws map and roles
+    void PauseShowActorStatus(int roleIdx, int delayMs = 500);
     void ShowItemMenu(const std::vector<int>& itemIds, int current, int x, int y);
     void ApplyItemEffect(int rnum, int inum, int where = 0);
     // void ApplyMedicine(int healerRoleIdx, int targetRoleIdx); // Moved to public
@@ -176,6 +189,8 @@ private:
     int m_forceAutoBattleFrameCount;
     bool m_exitAutoRequested; // Flag to exit auto battle mode
     int m_actionAnimRoleIndex; // Skip idle sprite while playing action animation
+    int m_maxSpeed = 1;
+    int m_lastActorIdx = -1;
 };
 
 #endif // BATTLEMANAGER_H
