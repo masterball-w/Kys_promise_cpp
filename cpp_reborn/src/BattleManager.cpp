@@ -1276,6 +1276,33 @@ void BattleManager::ClearDeadRolePic() {
     }
 }
 
+void BattleManager::GetViewCenter(int& cx, int& cy) const {
+    if (m_viewCenterX >= 0 && m_viewCenterY >= 0) {
+        cx = m_viewCenterX;
+        cy = m_viewCenterY;
+        return;
+    }
+    cx = 32;
+    cy = 32;
+    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < (int)m_battleRoles.size()) {
+        cx = m_battleRoles[m_currentRoleIndex].getX();
+        cy = m_battleRoles[m_currentRoleIndex].getY();
+    } else if (m_cursorX >= 0) {
+        cx = m_cursorX;
+        cy = m_cursorY;
+    }
+}
+
+void BattleManager::SetViewCenter(int x, int y) {
+    m_viewCenterX = x;
+    m_viewCenterY = y;
+}
+
+void BattleManager::ClearViewCenter() {
+    m_viewCenterX = -1;
+    m_viewCenterY = -1;
+}
+
 void BattleManager::UnlockOneWaiter(int exceptIdx) {
     for (size_t k = 0; k < m_battleRoles.size(); ++k) {
         if ((int)k != exceptIdx && m_battleRoles[k].getWait() == 1) {
@@ -1612,6 +1639,8 @@ void BattleManager::RunAtbBattle() {
             }
 
             if (!ProcessActorTurn(actorIdx)) break;
+
+            ClearDeadRolePic();
 
             // Pascal: only deduct when Acted=1; Wait also ends the turn.
             if (actor.getWait() == 1 && actor.getActed() == 0) {
@@ -1964,6 +1993,7 @@ void BattleManager::MoveAnimation(int roleIdx, int targetX, int targetY) {
         ++pathStep;
         role.setStep(std::max(0, role.getStep() - 1));
 
+        SetViewCenter(bx, by);
         RenderBattle();
         UIManager::getInstance().UpdateScreen();
         SDL_Delay((gameSpeed * 20) / 10);
@@ -1974,6 +2004,7 @@ void BattleManager::MoveAnimation(int roleIdx, int targetX, int targetY) {
     if (bx >= 0 && bx < 64 && by >= 0 && by < 64) {
         m_battleField[2][bx][by] = roleIdx;
     }
+    ClearViewCenter();
 }
 
 void BattleManager::MoveRole(int roleIdx, int x, int y) {
@@ -2422,10 +2453,9 @@ void BattleManager::AutoBattle(int roleIdx) {
                 int def = GetRoleDefence(target.getRNum(), true);
                 int dmg = std::max(1, att - def / 2);
                 tData.setCurrentHP(std::max(0, tData.getCurrentHP() - dmg));
-                if (tData.getCurrentHP() <= 0) target.setDead(1);
                 target.setShowNumber(dmg);
+                target.setFlashTimer(12);
                 ShowHurtValue(0);
-                ClearDeadRolePic();
                 actor.setActed(1);
             }
         }
@@ -2895,7 +2925,6 @@ void BattleManager::ApplyHiddenWeapon(int attackerIdx, int targetIdx, int itemId
         if (actor.getTeam() == 0) hurt = hurt * (200 - diff) / 200;
         if (actor.getTeam() == 1) hurt = hurt * (200 + diff) / 200;
         tData.setCurrentHP(std::max(0, tData.getCurrentHP() - hurt));
-        if (tData.getCurrentHP() == 0) targetBR.setDead(1);
         
         poi = std::max(0, (hidden * item.getAddPoi()) / 100 - GetRoleDefPoi(targetBR.getRNum(), true));
         if (actor.getTeam() == 0) poi = poi * (200 - diff) / 200;
@@ -2909,6 +2938,7 @@ void BattleManager::ApplyHiddenWeapon(int attackerIdx, int targetIdx, int itemId
     }
     
     targetBR.setShowNumber(hurt);
+    targetBR.setFlashTimer(12);
     SoundManager::getInstance().PlaySound(item.getAmiNum());
     PlayActionAmination(attackerIdx, 0, targetBR.getX(), targetBR.getY());
     PlayEffectAmination(0, item.getAmiNum(), targetBR.getX(), targetBR.getY());
@@ -3270,7 +3300,7 @@ void BattleManager::CalHurtRole(int attackerIdx, int magicId, int level) {
                 hurt = std::min((int)tData.getCurrentHP(), hurt);
                 tData.setCurrentHP(std::max(0, tData.getCurrentHP() - hurt));
                 if (tData.getCurrentHP() <= 0) {
-                    finalTarget.setDead(1);
+                    // Pascal CalHurtRole: only track kill/exp here; Dead is set in ClearDeadRolePic after ShowHurtValue.
                     attacker.setKilled(attacker.getKilled() + 1);
                     attacker.setExpGot(attacker.getExpGot() + tData.getLevel() * 10);
                 }
@@ -3368,7 +3398,6 @@ void BattleManager::CalHurtRole(int attackerIdx, int magicId, int level) {
     }
 
     ShowHurtValue(magic.getHurtType());
-    ClearDeadRolePic();
 
     // 攻击者消耗
     if (GameManager::getInstance().CheckBattleEffect(rnum, 10)) {
@@ -4258,14 +4287,8 @@ void BattleManager::RenderBattle() {
     }
     
     // Draw Map (Simple Isometric Loop)
-    int cx = 32, cy = 32; // Default Center
-    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < m_battleRoles.size()) {
-        cx = m_battleRoles[m_currentRoleIndex].getX();
-        cy = m_battleRoles[m_currentRoleIndex].getY();
-    } else if (m_cursorX >= 0) {
-        cx = m_cursorX;
-        cy = m_cursorY;
-    }
+    int cx = 32, cy = 32;
+    GetViewCenter(cx, cy);
     
     // Render tiles
     // Using SceneManager::DrawTile to reuse smp/sdx resources
@@ -4371,13 +4394,8 @@ void BattleManager::PlayActionAmination(int bnum, int mode, int targetX, int tar
         std::cerr << "[Action] renderer missing" << std::endl;
         return;
     }
-    int cx = m_cursorX;
-    int cy = m_cursorY;
-    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < m_battleRoles.size()) {
-        BattleRole& current = m_battleRoles[m_currentRoleIndex];
-        cx = current.getX();
-        cy = current.getY();
-    }
+    int cx = 0, cy = 0;
+    GetViewCenter(cx, cy);
     int drawX, drawY;
     SceneManager::getInstance().GetPositionOnScreen(r.getX(), r.getY(), cx, cy, drawX, drawY);
     m_actionAnimRoleIndex = bnum;
@@ -4435,13 +4453,8 @@ void BattleManager::PlayEffectAmination(int bigami, int amiNum, int targetX, int
     if (count <= 0) return;
     SDL_Renderer* renderer = GameManager::getInstance().getRenderer();
     if (!renderer) return;
-    int cx = m_cursorX;
-    int cy = m_cursorY;
-    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < m_battleRoles.size()) {
-        BattleRole& current = m_battleRoles[m_currentRoleIndex];
-        cx = current.getX();
-        cy = current.getY();
-    }
+    int cx = 0, cy = 0;
+    GetViewCenter(cx, cy);
     bool restored = false;
     int originalVal = 0;
     if (bigami == 0 && targetX >= 0 && targetX < 64 && targetY >= 0 && targetY < 64) {
@@ -4543,10 +4556,7 @@ void BattleManager::CalPoiHurtLife(int roleIdx) {
 
 void BattleManager::ShowHurtValue(const std::string& text, uint32_t color1, uint32_t color2) {
     int cx = 32, cy = 32;
-    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < (int)m_battleRoles.size()) {
-        cx = m_battleRoles[m_currentRoleIndex].getX();
-        cy = m_battleRoles[m_currentRoleIndex].getY();
-    }
+    GetViewCenter(cx, cy);
 
     for (int t = 0; t < 11; ++t) {
         RenderBattle();
@@ -4605,10 +4615,7 @@ void BattleManager::ShowHurtValue(int mode) {
     }
     
     int cx = 32, cy = 32;
-    if (m_currentRoleIndex >= 0 && m_currentRoleIndex < m_battleRoles.size()) {
-        cx = m_battleRoles[m_currentRoleIndex].getX();
-        cy = m_battleRoles[m_currentRoleIndex].getY();
-    }
+    GetViewCenter(cx, cy);
     
     for (int t = 0; t < 11; ++t) {
         for (int i = 0; i < m_battleRoles.size(); ++i) {

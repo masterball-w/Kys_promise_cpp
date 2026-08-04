@@ -191,6 +191,12 @@ private:
     int m_actionAnimRoleIndex; // Skip idle sprite while playing action animation
     int m_maxSpeed = 1;
     int m_lastActorIdx = -1;
+    int m_viewCenterX = -1; // -1: follow m_currentRoleIndex / cursor
+    int m_viewCenterY = -1;
+
+    void GetViewCenter(int& cx, int& cy) const;
+    void SetViewCenter(int x, int y);
+    void ClearViewCenter();
 };
 
 #endif // BATTLEMANAGER_H

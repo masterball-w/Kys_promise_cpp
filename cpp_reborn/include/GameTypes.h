@@ -18,7 +18,8 @@ constexpr int MAX_HP = 999;
 constexpr int MAX_MP = 999;
 constexpr int LIFE_HURT = 10;
 
-constexpr int MAX_ITEM_AMOUNT = 300;
+// Promise (前传) uses 400 slots; classic KYS uses 300 (kys_main.pas MAX_ITEM_AMOUNT).
+constexpr int MAX_ITEM_AMOUNT = 400;
 constexpr int MAX_TEAM_SIZE = 6;
 constexpr int BEGIN_BATTLE_ROLE_PIC = 1;
 

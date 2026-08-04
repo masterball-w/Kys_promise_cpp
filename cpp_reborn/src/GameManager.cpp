@@ -370,6 +370,19 @@ void GameManager::loadData(const std::string& savePrefix) {
                  }
              }
              std::cout << "[loadData] TeamList at offset " << TEAM_LIST_OFFSET << ": " << m_teamList[0] << ", " << m_teamList[1] << "..." << std::endl;
+
+             // Inventory follows team list at offset 42 (Pascal Ritemlist)
+             const int INV_OFFSET = 42;
+             int invSlots = (RoleOffset > INV_OFFSET) ? (RoleOffset - INV_OFFSET) / 4 : 0;
+             if (invSlots > MAX_ITEM_AMOUNT) invSlots = MAX_ITEM_AMOUNT;
+             m_inventory.assign(MAX_ITEM_AMOUNT, InventoryItem{-1, 0});
+             for (int i = 0; i < invSlots; ++i) {
+                 const int off = INV_OFFSET + i * 4;
+                 if (off + 4 <= RoleOffset) {
+                     m_inventory[i].id = *(int16_t*)(dataPtr + off);
+                     m_inventory[i].amount = *(int16_t*)(dataPtr + off + 2);
+                 }
+             }
         }
     }
     
@@ -810,13 +823,24 @@ bool GameManager::LoadGame(int slot) {
     resetWalkFrame();
 
     // offset 30: teamlist (6 entries)
-    m_teamList.resize(MAX_TEAM_SIZE);
-    for(int i=0; i<MAX_TEAM_SIZE; ++i) {
-        read16((int16_t&)m_teamList[i]);
+    // CRITICAL: read into int16 then assign — casting int& to int16_t& only patches low 16 bits.
+    // Empty slots are -1 (0xFFFFFFFF); patching 42 into that yields 0xFFFFFF2A (<0), hiding teammates.
+    m_teamList.assign(MAX_TEAM_SIZE, -1);
+    for (int i = 0; i < MAX_TEAM_SIZE; ++i) {
+        int16_t slotId = -1;
+        read16(slotId);
+        m_teamList[i] = slotId;
     }
+    std::cout << "[LoadGame] TeamList:";
+    for (int i = 0; i < MAX_TEAM_SIZE; ++i) {
+        std::cout << " " << m_teamList[i];
+    }
+    std::cout << std::endl;
 
-    m_inventory.resize(MAX_ITEM_AMOUNT);
-    for(int i=0; i<MAX_ITEM_AMOUNT; ++i) {
+    m_inventory.assign(MAX_ITEM_AMOUNT, InventoryItem{-1, 0});
+    const int invSlotsInFile = (RoleOffset > 42) ? (RoleOffset - 42) / 4 : 0;
+    const int invSlotsToRead = std::min(invSlotsInFile, MAX_ITEM_AMOUNT);
+    for (int i = 0; i < invSlotsToRead; ++i) {
         read16(m_inventory[i].id);
         read16(m_inventory[i].amount);
     }
@@ -955,6 +979,15 @@ bool GameManager::LoadGame(int slot) {
     }
     
     SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
+    reSetEntrance();
+
+    // Align role TeamState with loaded party header (Pascal keeps both in sync via instruct_10).
+    for (int i = 0; i < MAX_TEAM_SIZE; ++i) {
+        const int roleId = m_teamList[i];
+        if (roleId >= 0 && roleId < (int)m_roles.size()) {
+            m_roles[roleId].setTeamState(1);
+        }
+    }
 
     if (m_currentSceneId >= 0) {
         bool savedValid = (m_savedWorldX >= 0 && m_savedWorldX < 480 && m_savedWorldY >= 0 && m_savedWorldY < 480) &&
