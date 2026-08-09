@@ -40,6 +40,8 @@ public:
     // Animation & Effects
     void Update(uint32_t ticks); // Update animations (clouds, water, etc.)
     void DrawClouds(SDL_Renderer* renderer, int centerX, int centerY);
+    void SetSceneWeather(int mapMode);
+    int GetSceneWeather() const { return m_sceneWeatherMode; }
     
     // Accessors for SData equivalent
     int16_t GetSceneTile(int sceneId, int layer, int x, int y) const;
@@ -89,7 +91,7 @@ public:
     void DrawMmapSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame = 0);
 
     // 绘制精灵 (来自 Scene.Pic, 动态物体)
-    void DrawScenePicSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame = 0);
+    void DrawScenePicSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame = 0, float scale = -1.0f);
 
     // 通用精灵绘制 (根据 picIndex 自动判断来源)
     void DrawSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame = 0);
@@ -171,6 +173,7 @@ private:
     std::vector<int32_t> m_cloudIdxData; // cloud.idx
     
     int m_currentSceneId;
+    int m_sceneWeatherMode = 0;
     
     // Timer state
     uint32_t m_lastWaterUpdate;

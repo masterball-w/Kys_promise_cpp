@@ -2,6 +2,7 @@
 #include "UIManager.h"
 #include "BattleManager.h"
 #include "GameManager.h"
+#include "SceneManager.h"
 #include "FileLoader.h"
 #include "TextManager.h"
 #include <algorithm>
@@ -21,7 +22,12 @@
 namespace {
 constexpr int SCREEN_W = 640;
 constexpr int SCREEN_H = 480;
+constexpr int CENTER_X = 320;
 constexpr const char* GAME_PIC = "resource/Game.Pic";
+constexpr int SKIP_X = 520;
+constexpr int SKIP_Y = 448;
+constexpr int SKIP_W = 100;
+constexpr int SKIP_H = 28;
 
 struct SnakeSeg { int x = 0; int y = 0; };
 }
@@ -74,7 +80,17 @@ SDL_Surface* LittleGameManager::CropSurface(SDL_Surface* src, int sx, int sy, in
     if (!dst) return nullptr;
     SDL_Rect srcRect{ sx, sy, sw, sh };
     SDL_Rect dstRect{ 0, 0, sw, sh };
-    SDL_BlitSurface(src, &srcRect, dst, &dstRect);
+    // Convert/blit into ARGB8888 so RotateSurface90 can safely lock uint32 pixels.
+    if (!SDL_BlitSurface(src, &srcRect, dst, &dstRect)) {
+        // If blit fails (format/clip), fall back to converted full copy then crop.
+        SDL_Surface* converted = SDL_ConvertSurface(src, SDL_PIXELFORMAT_ARGB8888);
+        if (!converted) {
+            SDL_DestroySurface(dst);
+            return nullptr;
+        }
+        SDL_BlitSurface(converted, &srcRect, dst, &dstRect);
+        SDL_DestroySurface(converted);
+    }
     return dst;
 }
 
@@ -97,19 +113,24 @@ SDL_Surface* LittleGameManager::RotateSurface90(SDL_Surface* src, int turns) {
             if (owned) SDL_DestroySurface(owned);
             return nullptr;
         }
-        if (!SDL_LockSurface(cur) && !SDL_LockSurface(next)) {
+        // SDL3: SDL_LockSurface returns true on success (unlike SDL2's 0).
+        if (SDL_LockSurface(cur) && SDL_LockSurface(next)) {
             auto* srcPx = static_cast<uint32_t*>(cur->pixels);
             auto* dstPx = static_cast<uint32_t*>(next->pixels);
             int srcPitch = cur->pitch / 4;
             int dstPitch = next->pitch / 4;
             for (int y = 0; y < cur->h; ++y) {
                 for (int x = 0; x < cur->w; ++x) {
-                    // 90° clockwise
+                    // 90° clockwise — matches Pascal case 1: pic(i1,i2)=temp(i2,79-i1)
                     dstPx[x * dstPitch + (nh - 1 - y)] = srcPx[y * srcPitch + x];
                 }
             }
             SDL_UnlockSurface(cur);
             SDL_UnlockSurface(next);
+        } else {
+            if (owned) SDL_DestroySurface(owned);
+            SDL_DestroySurface(next);
+            return nullptr;
         }
         if (owned) SDL_DestroySurface(owned);
         owned = next;
@@ -118,23 +139,48 @@ SDL_Surface* LittleGameManager::RotateSurface90(SDL_Surface* src, int turns) {
     return owned;
 }
 
-std::string LittleGameManager::Ucs2ToUtf8(uint16_t ch) {
-    std::string out;
-    if (ch == 0 || ch == 0x20) {
-        out = " ";
-        return out;
-    }
-    if (ch < 0x80) {
-        out.push_back(static_cast<char>(ch));
-    } else if (ch < 0x800) {
-        out.push_back(static_cast<char>(0xC0 | (ch >> 6)));
-        out.push_back(static_cast<char>(0x80 | (ch & 0x3F)));
+std::string LittleGameManager::GbkPackedToUtf8(uint16_t packed) {
+    if (packed == 0 || packed == 0x2020) return " ";
+    const char b0 = static_cast<char>(packed & 0xFF);
+    const char b1 = static_cast<char>((packed >> 8) & 0xFF);
+    std::string gbk;
+    if (b1 != 0) {
+        gbk.push_back(b0);
+        gbk.push_back(b1);
     } else {
-        out.push_back(static_cast<char>(0xE0 | (ch >> 12)));
-        out.push_back(static_cast<char>(0x80 | ((ch >> 6) & 0x3F)));
-        out.push_back(static_cast<char>(0x80 | (ch & 0x3F)));
+        gbk.push_back(b0);
     }
-    return out;
+    return TextManager::getInstance().gbkToUtf8(gbk);
+}
+
+void LittleGameManager::DrawSmpPicCode(int picNum, int x, int y) {
+    // Lamp / Pascal drawSpic(beginpic): beginpic is already DrawSPic `num`
+    // (NOT an even tile code). DrawRLE8Pic uses SIdx[num-1] → C++ start-offset index = num-1.
+    if (picNum <= 0) return;
+    SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
+    if (!screen) return;
+    SceneManager::getInstance().DrawTile(nullptr, picNum - 1, x, y, 0, 0);
+}
+
+void LittleGameManager::DrawSkipButton() {
+    auto& ui = UIManager::getInstance();
+    ui.DrawRectangle(SKIP_X, SKIP_Y, SKIP_W, SKIP_H, 0x222222FF, 0xFFFFFFFF, 40);
+    ui.DrawShadowTextUtf8("跳过", SKIP_X + 18, SKIP_Y + 4, 0xFFFFFFFF, 0x000000FF);
+}
+
+bool LittleGameManager::PollSkipSuccess(SDL_Event& ev) {
+    if (ev.type == SDL_EVENT_KEY_DOWN &&
+        (ev.key.key == SDLK_S || ev.key.key == SDLK_J)) {
+        return true;
+    }
+    if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
+        const float mx = ev.button.x;
+        const float my = ev.button.y;
+        if (mx >= SKIP_X && mx < SKIP_X + SKIP_W && my >= SKIP_Y && my < SKIP_Y + SKIP_H) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::vector<uint16_t> LittleGameManager::LoadPoetryChars(int talknum) {
@@ -233,8 +279,9 @@ int LittleGameManager::FemaleSnake() {
         else DrawFallbackRect(40 * snake[0].x + 2, 40 * snake[0].y + 2, 36, 36, 0x88FF88FF);
 
         UIManager::getInstance().DrawShadowTextUtf8(
-            " 得分：" + std::to_string(eatFemale) + "  方向键移动  撞身结束",
+            " 得分：" + std::to_string(eatFemale) + "  方向键移动  S键跳过",
             10, 410, 0xFFFFFFFF, 0x000000FF);
+        DrawSkipButton();
         Present();
     };
 
@@ -284,6 +331,10 @@ int LittleGameManager::FemaleSnake() {
             if (ev.type == SDL_EVENT_KEY_UP) keyReady = true;
             if (ev.type == SDL_EVENT_KEY_DOWN && keyReady) {
                 keyReady = false;
+                if (PollSkipSuccess(ev)) {
+                    running = false;
+                    break;
+                }
                 int nd = -1;
                 switch (ev.key.key) {
                     case SDLK_UP: case SDLK_KP_8: nd = 0; break;
@@ -375,6 +426,7 @@ bool LittleGameManager::ShotEagle(int aim, int chance) {
                 running = false;
             } else if (ev.type == SDL_EVENT_KEY_DOWN) {
                 if (ev.key.key == SDLK_ESCAPE) { running = false; success = false; }
+                else if (PollSkipSuccess(ev)) { success = true; running = false; }
                 else if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) angle -= 3.0f;
                 else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) angle += 3.0f;
                 else if ((ev.key.key == SDLK_SPACE || ev.key.key == SDLK_RETURN) && !arrowFlying && shotsLeft > 0) {
@@ -395,7 +447,8 @@ bool LittleGameManager::ShotEagle(int aim, int chance) {
             } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
                 if (!arrowFlying && shotsLeft > 0) { charging = true; power = 0; }
             } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
-                if (charging && !arrowFlying) {
+                if (PollSkipSuccess(ev)) { success = true; running = false; }
+                else if (charging && !arrowFlying) {
                     charging = false;
                     --shotsLeft;
                     arrowFlying = true;
@@ -474,8 +527,9 @@ bool LittleGameManager::ShotEagle(int aim, int chance) {
         }
         UIManager::getInstance().DrawShadowTextUtf8(
             " 射雕 命中 " + std::to_string(goal) + "/" + std::to_string(aim) +
-            "  箭 " + std::to_string(shotsLeft) + "  空格蓄力射擊 ESC放棄",
+            "  箭 " + std::to_string(shotsLeft) + "  S键跳过",
             10, 10, 0xFFFFFFFF, 0x000000FF);
+        DrawSkipButton();
         Present();
         SDL_Delay(8);
     }
@@ -494,25 +548,26 @@ bool LittleGameManager::Acupuncture(int n) {
     int tries = HasPetLuck() ? 6 : 3;
 
     PicImage body = PicLoader::loadPic(GAME_PIC, 0);
+  PicImage pointPic = PicLoader::loadPic(GAME_PIC, 0);
     std::vector<std::pair<int, int>> points;
+    int bodyOx = 0, bodyOy = 0;
 
-    // Prefer list/Acupuncture.bin
     {
         auto bin = FileLoader::loadFile("list/Acupuncture.bin");
         if (bin.size() >= 12) {
             std::vector<int16_t> vals(bin.size() / 2);
             std::memcpy(vals.data(), bin.data(), vals.size() * 2);
-            int ox = vals.size() > 0 ? vals[0] : 120;
-            int oy = vals.size() > 1 ? vals[1] : 40;
-            (void)ox; (void)oy;
-            for (size_t i = 6; i + 1 < vals.size(); i += 2) {
-                if (vals[i] == -1 || vals[i + 1] == -1) break;
-                points.push_back({vals[i], vals[i + 1]});
+            bodyOx = vals.size() > 0 ? vals[0] : 0;
+            bodyOy = vals.size() > 1 ? vals[1] : 0;
+            for (int i = 3; i < 500; ++i) {
+                const int ix = i * 2;
+                if (ix + 1 >= (int)vals.size()) break;
+                if (vals[ix] == -1 || vals[ix + 1] == -1) break;
+                points.push_back({vals[ix], vals[ix + 1]});
             }
         }
     }
     if (points.empty()) {
-        // Fallback grid over body area
         for (int row = 0; row < 5; ++row)
             for (int col = 0; col < 4; ++col)
                 points.push_back({180 + col * 70, 80 + row * 60});
@@ -520,30 +575,47 @@ bool LittleGameManager::Acupuncture(int n) {
     if ((int)points.size() < n) n = (int)points.size();
 
     UIManager::getInstance().ShowDialogue(
-        HasPetLuck() ? " 針灸：依序點亮穴位（機會較多）" : " 針灸：依序點亮穴位", -1, 0);
+        HasPetLuck() ? " 针灸：按顺序点亮穴位（机会较多）" : " 针灸：按顺序点亮穴位", -1, 0);
 
     std::vector<int> sequence(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) sequence[i] = std::rand() % (int)points.size();
 
-    // Flash sequence
-    for (int i = 0; i < n; ++i) {
+    const int drawBodyX = 120;
+    const int drawBodyY = 40;
+
+    SDL_Surface* bodyCrop = nullptr;
+    SDL_Surface* pointSprite = nullptr;
+    if (body.surface) {
+        bodyCrop = CropSurface(body.surface, bodyOx, bodyOy, 395, 400);
+    }
+    if (pointPic.surface) {
+        pointSprite = CropSurface(pointPic.surface, 40, 400, 20, 20);
+    }
+
+    auto drawAcuFrame = [&](const std::vector<int>& lit, int litIndex = -1) {
         SDL_Renderer* r = UIManager::getInstance().GetRenderer();
         SDL_SetRenderDrawColor(r, 20, 20, 30, 255);
         SDL_RenderClear(r);
-        if (body.surface) BlitPic(body, 120, 40);
-        else DrawFallbackRect(120, 40, 360, 360, 0x886655FF);
+        if (bodyCrop) BlitSurface(bodyCrop, drawBodyX, drawBodyY);
+        else DrawFallbackRect(drawBodyX, drawBodyY, 360, 360, 0x886655FF);
         for (size_t p = 0; p < points.size(); ++p) {
-            uint32_t c = ((int)p == sequence[i]) ? 0xFFFF00FF : 0x888888FF;
-            DrawFallbackRect(points[p].first - 8, points[p].second - 8, 16, 16, c);
+            const bool on = std::find(lit.begin(), lit.end(), (int)p) != lit.end() || (int)p == litIndex;
+            if (on) {
+                if (pointSprite) BlitSurface(pointSprite, points[p].first - 10, points[p].second - 10);
+                else DrawFallbackRect(points[p].first - 8, points[p].second - 8, 16, 16, 0xFFFF00FF);
+            } else if (!pointSprite) {
+                DrawFallbackRect(points[p].first - 8, points[p].second - 8, 16, 16, 0x888888FF);
+            }
         }
-        UIManager::getInstance().DrawShadowTextUtf8(" 記住順序…", 20, 420, 0xFFFFFFFF, 0x000000FF);
+        DrawSkipButton();
+        UIManager::getInstance().DrawShadowTextUtf8(" 点击穴位  S键跳过", 20, 420, 0xFFFFFFFF, 0x000000FF);
         Present();
+    };
+
+    for (int i = 0; i < n; ++i) {
+        drawAcuFrame({}, sequence[i]);
         SDL_Delay(800);
-        SDL_SetRenderDrawColor(r, 20, 20, 30, 255);
-        SDL_RenderClear(r);
-        if (body.surface) BlitPic(body, 120, 40);
-        for (auto& pt : points) DrawFallbackRect(pt.first - 8, pt.second - 8, 16, 16, 0x888888FF);
-        Present();
+        drawAcuFrame({});
         SDL_Delay(300);
     }
 
@@ -556,90 +628,122 @@ bool LittleGameManager::Acupuncture(int n) {
             while (SDL_PollEvent(&ev)) {
                 if (ev.type == SDL_EVENT_QUIT) {
                     GameManager::getInstance().Quit();
+                    if (bodyCrop) SDL_DestroySurface(bodyCrop);
+                    if (pointSprite) SDL_DestroySurface(pointSprite);
                     PicLoader::freePic(body);
+                    PicLoader::freePic(pointPic);
                     return false;
                 }
-                if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
+                if (PollSkipSuccess(ev)) {
+                    if (bodyCrop) SDL_DestroySurface(bodyCrop);
+                    if (pointSprite) SDL_DestroySurface(pointSprite);
                     PicLoader::freePic(body);
+                    PicLoader::freePic(pointPic);
+                    return true;
+                }
+                if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
+                    if (bodyCrop) SDL_DestroySurface(bodyCrop);
+                    if (pointSprite) SDL_DestroySurface(pointSprite);
+                    PicLoader::freePic(body);
+                    PicLoader::freePic(pointPic);
                     return false;
                 }
                 if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
-                    float mx = ev.button.x, my = ev.button.y;
-                    int hit = -1;
+                    const float mx = ev.button.x, my = ev.button.y;
                     for (size_t p = 0; p < points.size(); ++p) {
-                        if (std::abs(mx - points[p].first) <= 12 && std::abs(my - points[p].second) <= 12) {
-                            hit = (int)p;
+                        if (std::abs(mx - points[p].first) <= 10 && std::abs(my - points[p].second) <= 10) {
+                            input.push_back((int)p);
+                            if ((int)input.size() == n) waiting = false;
                             break;
                         }
                     }
-                    if (hit >= 0) {
-                        input.push_back(hit);
-                        if ((int)input.size() == n) waiting = false;
-                    }
                 }
             }
-            SDL_Renderer* r = UIManager::getInstance().GetRenderer();
-            SDL_SetRenderDrawColor(r, 20, 20, 30, 255);
-            SDL_RenderClear(r);
-            if (body.surface) BlitPic(body, 120, 40);
-            else DrawFallbackRect(120, 40, 360, 360, 0x886655FF);
-            for (size_t p = 0; p < points.size(); ++p) {
-                bool lit = std::find(input.begin(), input.end(), (int)p) != input.end();
-                DrawFallbackRect(points[p].first - 8, points[p].second - 8, 16, 16,
-                                lit ? 0x44FF44FF : 0x888888FF);
-            }
-            UIManager::getInstance().DrawShadowTextUtf8(
-                " 點擊穴位  " + std::to_string(input.size()) + "/" + std::to_string(n) +
-                "  剩餘機會 " + std::to_string(tries - attempt),
-                20, 420, 0xFFFFFFFF, 0x000000FF);
-            Present();
+            drawAcuFrame(input);
             SDL_Delay(8);
         }
         success = (input == sequence);
     }
 
+    if (bodyCrop) SDL_DestroySurface(bodyCrop);
+    if (pointSprite) SDL_DestroySurface(pointSprite);
     PicLoader::freePic(body);
-    UIManager::getInstance().ShowDialogue(success ? " 針灸成功！" : " 針灸失敗…", -1, 0);
+    PicLoader::freePic(pointPic);
+    UIManager::getInstance().ShowDialogue(success ? " 针灸成功！" : " 针灸失败…", -1, 0);
     return success;
 }
 
 // ===================== Lamp (Lights Out) =====================
 
 bool LittleGameManager::Lamp(int c, int beginpic, int whitecount, int /*chance*/) {
-    (void)beginpic;
+    if (beginpic <= 0) beginpic = 2;
     if (HasPetLuck() && c > 2) --c;
     if (c < 2) c = 2;
     if (c > 8) c = 8;
-    int r = c;
+    const int r = c;
+    const int picDark = beginpic;
+    const int picLight = beginpic + 1;
+    const int picCursor = beginpic + 2;
     if (whitecount <= 0) whitecount = c;
 
-    std::vector<int> grid(static_cast<size_t>(c * r), 0);
+    std::vector<int> grid(static_cast<size_t>(c * r), picDark);
     for (int i = 0; i < whitecount; ++i) {
         int t = std::rand() % (c * r);
-        grid[t] = 1 - grid[t];
+        grid[static_cast<size_t>(t)] = (grid[static_cast<size_t>(t)] == picDark) ? picLight : picDark;
     }
 
-    int originX = (SCREEN_W - c * 50) / 2;
-    int originY = (SCREEN_H - r * 50) / 2;
+    const int originX = (SCREEN_W - c * 50) / 2;
+    const int originY = (SCREEN_H - r * 50) / 2;
     int menu = 0;
     bool running = true;
     bool success = false;
     SDL_Event ev;
 
-    auto toggle = [&](int idx) {
+    auto flipPic = [&](int idx, int center) {
         if (idx < 0 || idx >= c * r) return;
-        grid[idx] = 1 - grid[idx];
-    };
-    auto flipAt = [&](int idx) {
-        toggle(idx);
-        if (idx % c > 0) toggle(idx - 1);
-        if (idx % c < c - 1) toggle(idx + 1);
-        if (idx / c > 0) toggle(idx - c);
-        if (idx / c < r - 1) toggle(idx + c);
+        grid[static_cast<size_t>(idx)] = (grid[static_cast<size_t>(idx)] == picDark) ? picLight : picDark;
+        if (center % c > 0) {
+            const int n = center - 1;
+            grid[static_cast<size_t>(n)] = (grid[static_cast<size_t>(n)] == picDark) ? picLight : picDark;
+        }
+        if (center % c < c - 1) {
+            const int n = center + 1;
+            grid[static_cast<size_t>(n)] = (grid[static_cast<size_t>(n)] == picDark) ? picLight : picDark;
+        }
+        if (center / c > 0) {
+            const int n = center - c;
+            grid[static_cast<size_t>(n)] = (grid[static_cast<size_t>(n)] == picDark) ? picLight : picDark;
+        }
+        if (center / c < r - 1) {
+            const int n = center + c;
+            grid[static_cast<size_t>(n)] = (grid[static_cast<size_t>(n)] == picDark) ? picLight : picDark;
+        }
     };
     auto allSame = [&]() {
         for (int v : grid) if (v != grid[0]) return false;
         return true;
+    };
+
+    auto redrawLamp = [&]() {
+        SDL_Renderer* ren = UIManager::getInstance().GetRenderer();
+        SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
+        if (screen) {
+            SDL_FillSurfaceRect(screen, nullptr, SDL_MapSurfaceRGBA(screen, 10, 10, 20, 255));
+            for (int i = 0; i < c * r; ++i) {
+                const int px = originX + (i % c) * 50;
+                const int py = originY + (i / c) * 50;
+                DrawSmpPicCode(grid[static_cast<size_t>(i)], px, py);
+                if (i == menu) DrawSmpPicCode(picCursor, px, py);
+            }
+            GameManager::getInstance().RenderScreenTo(ren);
+        } else {
+            SDL_SetRenderDrawColor(ren, 10, 10, 20, 255);
+            SDL_RenderClear(ren);
+        }
+        UIManager::getInstance().DrawRectangle(originX - 10, originY - 10, c * 50 + 20, r * 50 + 20, 0, 0xFFFFFFFF, 40);
+        DrawSkipButton();
+        UIManager::getInstance().DrawShadowTextUtf8("黑白棋：点击翻转相邻格  S键跳过", 20, 20, 0xFFFFFFFF, 0x000000FF);
+        Present();
     };
 
     while (running) {
@@ -648,42 +752,31 @@ bool LittleGameManager::Lamp(int c, int beginpic, int whitecount, int /*chance*/
                 GameManager::getInstance().Quit();
                 return false;
             }
+            if (PollSkipSuccess(ev)) return true;
             if (ev.type == SDL_EVENT_KEY_DOWN) {
                 if (ev.key.key == SDLK_ESCAPE) { running = false; success = false; }
                 else if (ev.key.key == SDLK_UP || ev.key.key == SDLK_KP_8) menu = (menu - c + c * r) % (c * r);
                 else if (ev.key.key == SDLK_DOWN || ev.key.key == SDLK_KP_2) menu = (menu + c) % (c * r);
                 else if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) menu = (menu - 1 + c * r) % (c * r);
                 else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) menu = (menu + 1) % (c * r);
-                else if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_SPACE) flipAt(menu);
+                else if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_SPACE) flipPic(menu, menu);
             }
             if (ev.type == SDL_EVENT_MOUSE_MOTION) {
-                float mx = ev.motion.x, my = ev.motion.y;
+                const float mx = ev.motion.x, my = ev.motion.y;
                 if (mx >= originX && mx < originX + 50 * c && my >= originY && my < originY + 50 * r) {
-                    menu = ((int)(mx - originX) / 50) + ((int)(my - originY) / 50) * c;
+                    menu = static_cast<int>((mx - originX) / 50) + static_cast<int>((my - originY) / 50) * c;
                 }
             }
             if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
-                float mx = ev.button.x, my = ev.button.y;
+                const float mx = ev.button.x, my = ev.button.y;
                 if (mx >= originX && mx < originX + 50 * c && my >= originY && my < originY + 50 * r) {
-                    menu = ((int)(mx - originX) / 50) + ((int)(my - originY) / 50) * c;
-                    flipAt(menu);
+                    menu = static_cast<int>((mx - originX) / 50) + static_cast<int>((my - originY) / 50) * c;
+                    flipPic(menu, menu);
                 }
             }
         }
         if (allSame()) { success = true; running = false; SDL_Delay(400); }
-
-        SDL_Renderer* ren = UIManager::getInstance().GetRenderer();
-        SDL_SetRenderDrawColor(ren, 10, 10, 20, 255);
-        SDL_RenderClear(ren);
-        UIManager::getInstance().DrawRectangle(originX - 10, originY - 10, c * 50 + 20, r * 50 + 20, 0, 0xFFFFFFFF, 40);
-        for (int i = 0; i < c * r; ++i) {
-            int px = originX + (i % c) * 50;
-            int py = originY + (i / c) * 50;
-            DrawFallbackRect(px, py, 48, 48, grid[i] ? 0xEEEEEEFF : 0x333344FF);
-            if (i == menu) UIManager::getInstance().DrawRectangle(px, py, 48, 48, 0, 0xFFFF00FF, 0);
-        }
-        UIManager::getInstance().DrawShadowTextUtf8(" 黑白棋：翻轉相鄰格  ESC放棄", 20, 20, 0xFFFFFFFF, 0x000000FF);
-        Present();
+        redrawLamp();
         SDL_Delay(8);
     }
     return success;
@@ -697,113 +790,143 @@ bool LittleGameManager::Poetry(int talknum, int chance, int cols, int count) {
     if (cols <= 0) cols = 5;
     if (count <= 0) count = 10;
 
-    auto chars = LoadPoetryChars(talknum);
-    if (chars.empty()) {
-        // Fallback sample poem chars (UCS-2 CJK)
-        const uint16_t sample[] = {0x5C71,0x5DDD,0x7570,0x57DF,0x98A8,0x6708,0x540C,0x5929,0x6587,0x5B57};
-        chars.assign(sample, sample + 10);
+    auto original = LoadPoetryChars(talknum);
+    if (original.empty()) {
+        const uint16_t sample[] = {0xC9BD, 0xD0D8, 0xC9FA, 0xB2E3, 0xD4C6, 0xBEF6, 0xD5E1, 0xC8EB, 0xB9D9, 0xB9F0};
+        original.assign(sample, sample + 10);
     }
-    if (count > (int)chars.size()) count = (int)chars.size();
+    const int len = static_cast<int>(original.size());
+    if (count > len) count = len;
 
-    std::vector<uint16_t> pool = chars;
-    std::vector<uint16_t> answer(static_cast<size_t>(count), 0x20);
-    std::shuffle(pool.begin(), pool.end(), std::mt19937(std::random_device{}()));
+    std::vector<uint16_t> pool(static_cast<size_t>(len), 0);
+    std::vector<uint16_t> answer(static_cast<size_t>(count), 0x2020);
 
-    int srcSel = 0;
-    int dstSel = 0;
-    bool pickingDst = false;
+    for (int i = 0; i < len; ++i) {
+        int slot = (len > 1) ? (std::rand() % (len - 1)) : 0;
+        while (pool[static_cast<size_t>(slot)] != 0) {
+            slot = std::rand() % len;
+        }
+        pool[static_cast<size_t>(slot)] = original[static_cast<size_t>(i)];
+    }
+
+    const int row = std::max(1, len / cols);
+    const int ansCols = std::max(1, count / row);
+    const int wx = CENTER_X - cols * 20 - 12;
+    const int wy = 160;
+    const int wx1 = CENTER_X - ansCols * 20 - 12;
+    const int wy1 = 300;
+
+    int menu = 0;
+    bool selectingAnswer = false;
+    int answerMenu = 0;
     bool running = true;
     bool success = false;
     SDL_Event ev;
 
     auto checkWin = [&]() {
-        for (int i = 0; i < count; ++i)
-            if (answer[i] != chars[i]) return false;
+        for (int i = 0; i < count; ++i) {
+            if (answer[static_cast<size_t>(i)] != original[static_cast<size_t>(i)]) return false;
+        }
         return true;
     };
 
+    auto drawPoetryChar = [&](uint16_t ch, int px, int py, uint32_t frame) {
+        UIManager::getInstance().DrawRectangle(px + 11, py - 9, 39, 39, 0x222222FF, frame, 30);
+        UIManager::getInstance().DrawShadowTextUtf8(GbkPackedToUtf8(ch), px + 16, py, 0x05FFFFFF, 0x07FFFFFF);
+    };
+
+    auto redrawAll = [&]() {
+        SDL_Renderer* ren = UIManager::getInstance().GetRenderer();
+        SDL_SetRenderDrawColor(ren, 30, 20, 10, 255);
+        SDL_RenderClear(ren);
+        UIManager::getInstance().DrawRectangle(20, 20, 600, 400, 0x222222FF, 0xFFFFFFFF, 60);
+        UIManager::getInstance().DrawRectangle(wx1 + 11, wy1 - 9, ansCols * 40 - 1, row * 40 - 1, 0, 0xFFFFFFFF, 0);
+        UIManager::getInstance().DrawRectangle(wx + 11, wy - 9, cols * 40 - 1, row * 40 - 1, 0, 0xFFFFFFFF, 0);
+        UIManager::getInstance().DrawRectangle(CENTER_X - cols * 20 - 1, 35, cols * 40 - 1, 39, 0, 0xFFFFFFFF, 0);
+        UIManager::getInstance().DrawShadowTextUtf8(
+            std::string("机会：") + std::to_string(chance), wx + 10, 45, 0x05FFFFFF, 0x07FFFFFF);
+        for (int i = 0; i < len; ++i) {
+            const uint32_t frame = (!selectingAnswer && i == menu) ? 0x05FFFFFF : 0xFFFFFFFF;
+            drawPoetryChar(pool[static_cast<size_t>(i)], wx + (i % cols) * 40, wy + (i / cols) * 40, frame);
+        }
+        for (int i = 0; i < count; ++i) {
+            const uint32_t frame = (selectingAnswer && i == answerMenu) ? 0x05FFFFFF : 0xFFFFFFFF;
+            drawPoetryChar(answer[static_cast<size_t>(i)], wx1 + (i % ansCols) * 40, wy1 + (i / ansCols) * 40, frame);
+        }
+        DrawSkipButton();
+        UIManager::getInstance().DrawShadowTextUtf8(
+            selectingAnswer ? "选择答案格" : "选择字后按空格  S键跳过",
+            20, 430, 0xFFFFFFFF, 0x000000FF);
+        Present();
+    };
+
+    auto swapWithAnswer = [&](int srcMenu, int dstMenu) {
+        if (srcMenu < 0 || srcMenu >= len || dstMenu < 0 || dstMenu >= count) return;
+        const uint16_t tmp = pool[static_cast<size_t>(srcMenu)];
+        pool[static_cast<size_t>(srcMenu)] = answer[static_cast<size_t>(dstMenu)];
+        answer[static_cast<size_t>(dstMenu)] = tmp;
+        --chance;
+    };
+
+    redrawAll();
     while (running) {
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT) {
                 GameManager::getInstance().Quit();
                 return false;
             }
-            if (ev.type == SDL_EVENT_KEY_DOWN) {
-                if (ev.key.key == SDLK_ESCAPE) { running = false; success = false; }
-                else if (!pickingDst) {
-                    if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) srcSel = (srcSel - 1 + (int)pool.size()) % (int)pool.size();
-                    else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) srcSel = (srcSel + 1) % (int)pool.size();
-                    else if (ev.key.key == SDLK_UP || ev.key.key == SDLK_KP_8) srcSel = (srcSel - cols + (int)pool.size()) % (int)pool.size();
-                    else if (ev.key.key == SDLK_DOWN || ev.key.key == SDLK_KP_2) srcSel = (srcSel + cols) % (int)pool.size();
-                    else if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_SPACE) pickingDst = true;
-                } else {
-                    if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) dstSel = (dstSel - 1 + count) % count;
-                    else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) dstSel = (dstSel + 1) % count;
+            if (PollSkipSuccess(ev)) return true;
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
+                running = false;
+                success = false;
+            } else if (ev.type == SDL_EVENT_KEY_DOWN) {
+                if (!selectingAnswer) {
+                    if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) menu = (menu - 1 + len) % len;
+                    else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) menu = (menu + 1) % len;
+                    else if (ev.key.key == SDLK_UP || ev.key.key == SDLK_KP_8) menu = (menu - cols + len) % len;
+                    else if (ev.key.key == SDLK_DOWN || ev.key.key == SDLK_KP_2) menu = (menu + cols) % len;
                     else if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_SPACE) {
-                        std::swap(pool[srcSel], answer[dstSel]);
-                        --chance;
-                        pickingDst = false;
+                        selectingAnswer = true;
+                        answerMenu = 0;
+                    }
+                } else {
+                    if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) answerMenu = (answerMenu - 1 + count) % count;
+                    else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) answerMenu = (answerMenu + 1) % count;
+                    else if (ev.key.key == SDLK_UP || ev.key.key == SDLK_KP_8) answerMenu = (answerMenu - ansCols + count) % count;
+                    else if (ev.key.key == SDLK_DOWN || ev.key.key == SDLK_KP_2) answerMenu = (answerMenu + ansCols) % count;
+                    else if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_SPACE) {
+                        swapWithAnswer(menu, answerMenu);
+                        selectingAnswer = false;
                         if (checkWin()) { success = true; running = false; }
-                        else if (chance <= 0) {
-                            success = checkWin();
-                            running = false;
-                        }
+                        else if (chance <= 0) { success = checkWin(); running = false; }
                     }
                 }
-            }
-            if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
-                float mx = ev.button.x, my = ev.button.y;
-                // pool area
-                int poolY = 60;
-                for (size_t i = 0; i < pool.size(); ++i) {
-                    int px = 40 + ((int)i % cols) * 40;
-                    int py = poolY + ((int)i / cols) * 40;
-                    if (mx >= px && mx < px + 36 && my >= py && my < py + 36) {
-                        srcSel = (int)i;
-                        pickingDst = true;
+            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_UP && ev.button.button == SDL_BUTTON_LEFT) {
+                const float mx = ev.button.x;
+                const float my = ev.button.y;
+                if (mx >= wx - 11 && mx < wx - 11 + cols * 40 && my >= wy - 9 && my < wy - 9 + row * 40) {
+                    menu = static_cast<int>((mx - wx - 11) / 40) + static_cast<int>((my - wy + 9) / 40) * cols;
+                    if (menu >= 0 && menu < len) {
+                        selectingAnswer = true;
+                        answerMenu = 0;
                     }
                 }
-                int ansY = 280;
-                for (int i = 0; i < count; ++i) {
-                    int px = 40 + (i % cols) * 40;
-                    int py = ansY + (i / cols) * 40;
-                    if (mx >= px && mx < px + 36 && my >= py && my < py + 36 && pickingDst) {
-                        dstSel = i;
-                        std::swap(pool[srcSel], answer[dstSel]);
-                        --chance;
-                        pickingDst = false;
+                if (selectingAnswer && mx >= wx1 - 11 && mx < wx1 - 11 + ansCols * 40 &&
+                    my >= wy1 - 9 && my < wy1 - 9 + row * 40) {
+                    answerMenu = static_cast<int>((mx - wx1 - 11) / 40) + static_cast<int>((my - wy1 + 9) / 40) * ansCols;
+                    if (answerMenu >= 0 && answerMenu < count) {
+                        swapWithAnswer(menu, answerMenu);
+                        selectingAnswer = false;
                         if (checkWin()) { success = true; running = false; }
                         else if (chance <= 0) { success = checkWin(); running = false; }
                     }
                 }
             }
         }
-
-        SDL_Renderer* ren = UIManager::getInstance().GetRenderer();
-        SDL_SetRenderDrawColor(ren, 30, 20, 10, 255);
-        SDL_RenderClear(ren);
-        UIManager::getInstance().DrawShadowTextUtf8(
-            std::string(" 作詩 機會:") + std::to_string(chance) + (pickingDst ? "  選答案格" : "  選字"),
-            20, 20, 0xFFFF00FF, 0x000000FF);
-        for (size_t i = 0; i < pool.size(); ++i) {
-            int px = 40 + ((int)i % cols) * 40;
-            int py = 60 + ((int)i / cols) * 40;
-            uint32_t frame = ((int)i == srcSel) ? 0xFFFF00FF : 0xFFFFFFFF;
-            UIManager::getInstance().DrawRectangle(px, py, 36, 36, 0x222222FF, frame, 30);
-            UIManager::getInstance().DrawShadowTextUtf8(Ucs2ToUtf8(pool[i]), px + 6, py + 6, 0xFFFFFFFF, 0x000000FF);
-        }
-        UIManager::getInstance().DrawShadowTextUtf8(" 答案：", 20, 250, 0xFFFFFFFF, 0x000000FF);
-        for (int i = 0; i < count; ++i) {
-            int px = 40 + (i % cols) * 40;
-            int py = 280 + (i / cols) * 40;
-            uint32_t frame = (pickingDst && i == dstSel) ? 0x00FF00FF : 0xAAAAAAAA;
-            UIManager::getInstance().DrawRectangle(px, py, 36, 36, 0x222222FF, frame, 30);
-            UIManager::getInstance().DrawShadowTextUtf8(Ucs2ToUtf8(answer[i]), px + 6, py + 6, 0xFFFFFFFF, 0x000000FF);
-        }
-        Present();
+        if (running) redrawAll();
         SDL_Delay(8);
     }
-    UIManager::getInstance().ShowDialogue(success ? " 作詩成功！" : " 作詩失敗…", -1, 0);
+    UIManager::getInstance().ShowDialogue(success ? " 作诗成功！" : " 作诗失败…", -1, 0);
     return success;
 }
 
@@ -830,10 +953,21 @@ bool LittleGameManager::RotoSpellPicture(int num, int chance) {
 
     struct Cell { int id; int rot; };
     std::vector<Cell> board(25);
-    for (int i = 0; i < 25; ++i) board[i] = {i, std::rand() % 4};
-    std::shuffle(board.begin(), board.end(), std::mt19937(std::random_device{}()));
+    std::vector<int> positions(25, -1);
+    for (int i = 0; i < 25; ++i) board[i].rot = std::rand() % 4;
+    for (int i = 0; i < 25; ++i) {
+        for (;;) {
+            const int r = std::rand() % 25;
+            if (positions[static_cast<size_t>(r)] == -1) {
+                positions[static_cast<size_t>(r)] = i;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < 25; ++i) board[static_cast<size_t>(i)].id = positions[static_cast<size_t>(i)];
 
-    int ox = 150, oy = 40;
+    const int ox = 150;
+    const int oy = 35; // Pascal y=5 + 30
     int sel = -1;
     int cursor = 0;
     bool running = true;
@@ -872,6 +1006,9 @@ bool LittleGameManager::RotoSpellPicture(int num, int chance) {
                 if (ev.key.key == SDLK_ESCAPE) {
                     if (sel >= 0) sel = -1;
                     else { running = false; success = false; }
+                } else if (PollSkipSuccess(ev)) {
+                    success = true;
+                    running = false;
                 } else if (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_KP_4) cursor = (cursor + 24) % 25;
                 else if (ev.key.key == SDLK_RIGHT || ev.key.key == SDLK_KP_6) cursor = (cursor + 1) % 25;
                 else if (ev.key.key == SDLK_UP || ev.key.key == SDLK_KP_8) cursor = (cursor + 20) % 25;
@@ -939,9 +1076,10 @@ bool LittleGameManager::RotoSpellPicture(int num, int chance) {
             if (i == sel) UIManager::getInstance().DrawRectangle(px + 2, py + 2, tile - 4, tile - 4, 0, 0x00FF00FF, 0);
         }
         UIManager::getInstance().DrawShadowTextUtf8(
-            " 拼圖 機會:" + std::to_string(chance) + " 正確:" + std::to_string(countRight()) +
-            "/25  左鍵交換 右鍵/回車旋轉",
+            " 拼图 机会:" + std::to_string(chance) + " 正确:" + std::to_string(countRight()) +
+            "/25  S键跳过",
             10, 10, 0xFFFFFFFF, 0x000000FF);
+        DrawSkipButton();
         Present();
         SDL_Delay(8);
     }

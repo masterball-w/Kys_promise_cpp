@@ -546,6 +546,7 @@ void SceneManager::InitialScene() {
         int pal = sc->getPallet();
         if (pal < 0 || pal > 3) pal = 0;
         GraphicsUtils::resetPalette(pal);
+        GraphicsUtils::setScenePalletTint(pal);
     }
 
     int eventsOnLayer = 0;
@@ -654,6 +655,10 @@ void SceneManager::UpdateSceneGraphic(int mapX, int mapY, int /*oldPic*/, int /*
         return;
     }
     // Pascal updates pre-baked SceneImg; this engine redraws from SData/DData each frame.
+}
+
+void SceneManager::SetSceneWeather(int mapMode) {
+    m_sceneWeatherMode = mapMode;
 }
 
 void SceneManager::DrawClouds(SDL_Renderer* renderer, int centerX, int centerY) {
@@ -910,10 +915,22 @@ void SceneManager::DrawWorldMap(SDL_Renderer* renderer, int centerX, int centerY
 }
 
 void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
+    if (SDL_Surface* screen = GameManager::getInstance().getScreenSurface()) {
+        SDL_FillSurfaceRect(screen, nullptr, 0xFF000000);
+    }
+
     // If Scene is -1 (World Map), delegate
     if (m_currentSceneId == -1) {
         DrawWorldMap(renderer, centerX, centerY);
         return;
+    }
+
+    Scene* activeScene = GetScene(m_currentSceneId);
+    if (activeScene) {
+        m_sceneWeatherMode = activeScene->getMapMode();
+        GraphicsUtils::setScenePalletTint(activeScene->getPallet());
+    } else {
+        GraphicsUtils::setScenePalletTint(0);
     }
 
     // Safety check: if resources failed to load, don't draw
@@ -934,11 +951,6 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
             loggedMap = true;
         }
         return; // Nothing to draw
-    }
-
-    // Opaque clear (ARGB). Alpha=0 left holes that Talk/CaptureScreen could treat oddly.
-    if (SDL_Surface* screen = GameManager::getInstance().getScreenSurface()) {
-        SDL_FillSurfaceRect(screen, nullptr, 0xFF000000);
     }
 
     static int16_t spriteMap[SCENE_MAP_SIZE][SCENE_MAP_SIZE];
@@ -1030,7 +1042,8 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
                         DrawTile(renderer, smpIndex, x, drawY, 0, 0);
                         ++eventsDrawn;
                     } else {
-                        DrawMmapSprite(renderer, (-eventPic / 2) - 1, x, drawY, 0);
+                        // Pascal: DrawSNewPic(-DData[5] div 2) → Scene.Pic[num], not mmap
+                        DrawScenePicSprite(renderer, (-eventPic) / 2, x, drawY, 0, 1.0f);
                         ++eventsDrawn;
                     }
                 }
@@ -1052,6 +1065,22 @@ void SceneManager::DrawScene(SDL_Renderer* renderer, int centerX, int centerY) {
                       << " cam=(" << centerX << "," << centerY << ")"
                       << " eventsDrawn=" << eventsDrawn << std::endl;
             ++s_summary;
+        }
+    }
+
+    // Scene weather overlay (Pascal SetScene Mapmode) — draw on surface, not renderer.
+    if (m_sceneWeatherMode > 0) {
+        SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
+        if (screen) {
+            uint8_t r = 0x88, g = 0x88, b = 0x88;
+            int alphaPercent = 50;
+            if (m_sceneWeatherMode == 2) {
+                r = 0x44; g = 0x66; b = 0xAA; alphaPercent = 38;
+            } else if (m_sceneWeatherMode == 3) {
+                r = 0xCC; g = 0xCC; b = 0xFF; alphaPercent = 31;
+            }
+            GraphicsUtils::BlendRectangleOnSurface(screen, 0, 0, screen->w - 1, screen->h - 1,
+                                                   r, g, b, 0, alphaPercent);
         }
     }
 
@@ -1144,7 +1173,7 @@ void SceneManager::DrawMmapSprite(SDL_Renderer* renderer, int picIndex, int x, i
     GraphicsUtils::DrawRLE8(screen, x, y, &m_mmpPicData[offset], m_mmpPicData.size() - offset, 0, CHAR_SCALE);
 }
 
-void SceneManager::DrawScenePicSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame) {
+void SceneManager::DrawScenePicSprite(SDL_Renderer* renderer, int picIndex, int x, int y, int frame, float scale) {
     if (picIndex < 0 || picIndex >= (int)m_scenePics.size()) return;
     
     const auto& sp = m_scenePics[picIndex];
@@ -1153,14 +1182,15 @@ void SceneManager::DrawScenePicSprite(SDL_Renderer* renderer, int picIndex, int 
     SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
     if (!screen) return;
     
+    const float drawScale = (scale < 0.0f) ? CHAR_SCALE : scale;
+
     // PNGs in Scene.Pic already have their own offset (sp.x, sp.y)
     // In Pascal: x1 := px - Scenepic[num].x + 1;
     SDL_Rect dest = { x - sp.x, y - sp.y, sp.surface->w, sp.surface->h };
     
-    // Scale if needed
-    if (CHAR_SCALE != 1.0f) {
-        dest.w = (int)(dest.w * CHAR_SCALE);
-        dest.h = (int)(dest.h * CHAR_SCALE);
+    if (drawScale != 1.0f) {
+        dest.w = (int)(dest.w * drawScale);
+        dest.h = (int)(dest.h * drawScale);
     }
     
     SDL_BlitSurface(sp.surface, NULL, screen, &dest);

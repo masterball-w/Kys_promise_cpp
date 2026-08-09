@@ -17,6 +17,9 @@ public:
 
     void FlushEvents();
 
+    /** Returns true when KEY_UP should advance dialogue (Pascal NewTalk parity). */
+    static bool IsDialogueAdvanceKey(const SDL_Event& event, uint32_t openTimeMs, uint32_t debounceMs = 280);
+
 private:
     InputManager() = default;
 

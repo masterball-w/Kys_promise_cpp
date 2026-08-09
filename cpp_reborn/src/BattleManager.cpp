@@ -1737,6 +1737,11 @@ void BattleManager::RunBattle() {
     }
     
     Scene& curScene = GameManager::getInstance().getScene(GameManager::getInstance().getCurrentSceneId());
+    int pal = curScene.getPallet();
+    if (pal < 0 || pal > 3) pal = 0;
+    GraphicsUtils::resetPalette(pal);
+    GameManager::getInstance().RedrawRoamingScene();
+
     int entranceMusic = curScene.getEntranceMusic();
     if (entranceMusic >= 0) {
         SoundManager::getInstance().PlayMusic(entranceMusic);
@@ -2149,15 +2154,16 @@ int BattleManager::SelectAutoMode() {
     
     auto redrawMenu = [&]() {
         RenderBattle();
-        int x = 100;
+        // Pascal ShowModeMenu: x=157,y=100, DrawRectangle(x,y,75,74), text at x-17
+        int x = 157;
         int y = 100;
-        int w = 100;
-        int h = max * 22 + 28;
+        int w = 75;
+        int h = 74;
         UIManager::getInstance().DrawRectangle(x, y, w, h, 0x000000, 0xFFFFFFFF, 30);
         for (int i = 0; i <= max; ++i) {
-            uint32_t color1 = (i == menu) ? 0x05FFFFFF : 0x21FFFFFF;
-            uint32_t color2 = (i == menu) ? 0x07FFFFFF : 0x23FFFFFF;
-            UIManager::getInstance().DrawShadowTextUtf8(modes[i], x + 13, y + 3 + i * 22, color1, color2);
+            uint32_t color1 = (i == menu) ? 0x64FFFFFF : 0x21FFFFFF;
+            uint32_t color2 = (i == menu) ? 0x66FFFFFF : 0x23FFFFFF;
+            UIManager::getInstance().DrawShadowTextUtf8(modes[i], x - 17, y + 3 + i * 22, color1, color2);
         }
         UIManager::getInstance().UpdateScreen();
     };
@@ -2234,9 +2240,9 @@ int BattleManager::SelectAutoTarget(int roleIdx) {
         int h = max * 22 + 28;
         UIManager::getInstance().DrawRectangle(x, y, w, h, 0x000000, 0xFFFFFFFF, 30);
         for (int i = 0; i <= max; ++i) {
-            uint32_t color1 = (i == menu) ? 0x05FFFFFF : 0x21FFFFFF;
-            uint32_t color2 = (i == menu) ? 0x07FFFFFF : 0x23FFFFFF;
-            UIManager::getInstance().DrawShadowTextUtf8(modes[i], x + 13, y + 3 + i * 22, color1, color2);
+            uint32_t color1 = (i == menu) ? 0x64FFFFFF : 0x21FFFFFF;
+            uint32_t color2 = (i == menu) ? 0x66FFFFFF : 0x23FFFFFF;
+            UIManager::getInstance().DrawShadowTextUtf8(modes[i], x - 17, y + 3 + i * 22, color1, color2);
         }
         UIManager::getInstance().UpdateScreen();
     };
@@ -2303,17 +2309,123 @@ void BattleManager::PauseShowActorStatus(int roleIdx, int delayMs) {
 }
 
 void BattleManager::AutoBattle(int roleIdx) {
+    if (roleIdx < 0 || roleIdx >= (int)m_battleRoles.size()) return;
+    if (m_battleRoles[roleIdx].getTeam() == 0) {
+        AutoBattle2(roleIdx);
+        return;
+    }
+
+    BattleRole& actor = m_battleRoles[roleIdx];
+    Role& role = GameManager::getInstance().getRole(actor.getRNum());
+    if (actor.getActed() != 0) return;
+
+    PauseShowActorStatus(roleIdx, 350);
+
+    // Self heal / items (same thresholds as Pascal AutoBattle)
+    if (actor.getActed() == 0 && role.getCurrentHP() < role.getMaxHP() / 5) {
+        if (rand() % 100 < 70) {
+            if (GetRoleMedcine(actor.getRNum(), true) >= 50 && role.getPhyPower() >= 50 && rand() % 100 < 50) {
+                ApplyMedicine(roleIdx, roleIdx);
+            } else {
+                AutoUseItem(roleIdx, 45);
+            }
+        }
+    }
+    if (actor.getActed()) return;
+    if (actor.getActed() == 0 && role.getCurrentMP() < role.getMaxMP() / 5) {
+        if (rand() % 100 < 60) AutoUseItem(roleIdx, 50);
+    }
+    if (actor.getActed()) return;
+    if (actor.getActed() == 0 && role.getPhyPower() < 20) {
+        if (rand() % 100 < 80) AutoUseItem(roleIdx, 48);
+    }
+    if (actor.getActed()) return;
+
+    // Random enemy (Pascal Calrnum + aim walk)
+    std::vector<int> enemies;
+    for (int i = 0; i < (int)m_battleRoles.size(); ++i) {
+        if (m_battleRoles[i].getTeam() != actor.getTeam() &&
+            m_battleRoles[i].getRNum() >= 0 && m_battleRoles[i].getDead() == 0) {
+            enemies.push_back(i);
+        }
+    }
+    if (enemies.empty()) {
+        actor.setActed(1);
+        return;
+    }
+    int targetIdx = enemies[rand() % enemies.size()];
+    BattleRole& target = m_battleRoles[targetIdx];
+
+    CalSelectableAreaEx(roleIdx, actor.getTeam(), 0);
+    int bx = actor.getX(), by = actor.getY();
+    int ax1 = target.getX(), ay1 = target.getY();
+    int bestX = bx, bestY = by;
+    int dis0 = std::abs(ax1 - bx) + std::abs(ay1 - by);
+    int xMin = std::min(ax1, bx), xMax = std::max(ax1, bx);
+    int yMin = std::min(ay1, by), yMax = std::max(ay1, by);
+    for (int x = xMin; x <= xMax; ++x) {
+        for (int y = yMin; y <= yMax; ++y) {
+            if (m_battleField[3][x][y] < 0) continue;
+            int dis = std::abs(ax1 - x) + std::abs(ay1 - y);
+            int stepCost = std::abs(x - bx) + std::abs(y - by);
+            if (dis < dis0 && stepCost <= actor.getStep()) {
+                bestX = x;
+                bestY = y;
+                dis0 = dis;
+            }
+        }
+    }
+    if (m_battleField[3][bestX][bestY] >= 0 && (bestX != bx || bestY != by)) {
+        MoveAnimation(roleIdx, bestX, bestY);
+    }
+
+    if (actor.getActed() == 0 && role.getPhyPower() >= 10) {
+        int level = 1;
+        int magicId = FindAttackMagicForAuto(actor.getRNum(), level);
+        int attackRange = 1;
+        if (magicId > 0) {
+            Magic& magic = GameManager::getInstance().getMagic(magicId);
+            attackRange = std::max(1, static_cast<int>(magic.getAttDistance(level - 1)));
+        }
+        int dist = std::abs(actor.getX() - target.getX()) + std::abs(actor.getY() - target.getY());
+        if (dist <= attackRange) {
+            if (magicId > 0) Attack(roleIdx, targetIdx, magicId);
+            else {
+                PlayActionAmination(roleIdx, 0, target.getX(), target.getY());
+                SoundManager::getInstance().PlaySound(1);
+                Role& tData = GameManager::getInstance().getRole(target.getRNum());
+                int dmg = std::max(1, GetRoleAttack(actor.getRNum(), true) - GetRoleDefence(target.getRNum(), true) / 2);
+                tData.setCurrentHP(std::max(0, tData.getCurrentHP() - dmg));
+                target.setShowNumber(dmg);
+                target.setFlashTimer(12);
+                ShowHurtValue(0);
+                actor.setActed(1);
+            }
+        }
+    }
+
+    if (actor.getActed() == 0) {
+        int rnum = actor.getRNum();
+        if (rnum >= 0) {
+            Role& rData = GameManager::getInstance().getRole(rnum);
+            int hurt = std::clamp((int)rData.getHurt(), 0, 100);
+            rData.setCurrentHP(std::min((int)rData.getMaxHP(), rData.getCurrentHP() + ((100 - hurt) * rData.getMaxHP()) / 2000));
+            rData.setCurrentMP(std::min((int)rData.getMaxMP(), rData.getCurrentMP() + ((100 - hurt) * rData.getMaxMP()) / 2000));
+            rData.setPhyPower(std::min(MAX_PHYSICAL_POWER, rData.getPhyPower() + ((100 - hurt) * MAX_PHYSICAL_POWER) / 2000));
+        }
+        actor.setActed(1);
+    }
+}
+
+void BattleManager::AutoBattle2(int roleIdx) {
     BattleRole& actor = m_battleRoles[roleIdx];
     Role& role = GameManager::getInstance().getRole(actor.getRNum());
     if (actor.getActed() != 0) return;
 
     if (actor.getTeam() != 0) {
-        // Pascal AutoBattle2: showsimplestatus(rnum, 30, 330) + sdl_delay(350)
-        PauseShowActorStatus(roleIdx, 500);
+        PauseShowActorStatus(roleIdx, 350);
     } else {
-        RenderBattle();
-        UIManager::getInstance().UpdateScreen();
-        SDL_Delay(100);
+        PauseShowActorStatus(roleIdx, 350);
     }
     
     std::cout << "[Auto] role=" << roleIdx << " rnum=" << actor.getRNum()

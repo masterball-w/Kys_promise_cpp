@@ -50,3 +50,10 @@ void InputManager::FlushEvents() {
     }
     BeginFrame();
 }
+
+bool InputManager::IsDialogueAdvanceKey(const SDL_Event& event, uint32_t openTimeMs, uint32_t debounceMs) {
+    if (event.type != SDL_EVENT_KEY_UP) return false;
+    if (SDL_GetTicks() - openTimeMs < debounceMs) return false;
+    SDL_Keycode key = event.key.key;
+    return key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_KP_ENTER;
+}

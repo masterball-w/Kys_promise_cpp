@@ -40,10 +40,12 @@ public:
     void DrawText(const std::string& text, int x, int y, uint32_t color, int fontSize = 20); // Assumes GBK input
     void DrawTextUtf8(const std::string& text, int x, int y, uint32_t color, int fontSize = 20); // Assumes UTF-8 input
     void DrawShadowText(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize = 20); // Assumes GBK
-    void DrawShadowTextUtf8(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize = 20); // Assumes UTF-8
+    void DrawShadowTextUtf8(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize = 20);
+    void DrawTextWithRectUtf8(const std::string& text, int x, int y, int w, uint32_t color1, uint32_t color2);
+    void DrawCommonMenu2(int x, int y, int w, int selection, const std::string& opt0, const std::string& opt1); // Assumes UTF-8
     
     // Draw Head Portrait
-    void DrawHead(int headId, int x, int y, int green = 0, int red = 0, int gray = 0);
+    void DrawHead(int headId, int x, int y, int green = 0, int red = 0, int gray = 0, bool drawFrame = true, int picYOffset = 0);
     
     // Draw Item Pic with offset (like Pascal's drawPngPic)
     void DrawItemPicWithOffset(int itemId, int x, int y);
@@ -52,7 +54,7 @@ public:
     void ShowCharacterCreation(const Role& role);
 
     // Menu System
-    void ShowMenu(); // Main game menu (Save, Load, etc.) - Blocking
+    bool ShowMenu(); // Main game menu — returns true if a save was loaded
     void RenderMenuSystem(int menuSelection); // Render one frame of menu
     void SelectShowStatus();
     void ShowStatus(int roleId);
@@ -63,13 +65,13 @@ public:
     int ShowBattleItemMenu(const std::function<void()>& redrawBackground);
     void SelectShowMagic();
     void ShowMagic(int roleId, int selectedIndex = -1);
-    void SelectShowSystem();
+    bool SelectShowSystem(); // returns true if a save was loaded
     void ShowSystem(int selectedIndex, int subMenu = -1, int subSelection = 0);
     void ShowSelect(int row, int menu, const std::vector<std::string>& words, int width);
     void SelectShowSkill();
     void ShowSkill(int petId, int selectedIndex);
     void SelectShowTeammate();
-    void ShowTeammate(int tMenu, int rMenu, int position);
+    void ShowTeammate(int tMenu, int rMenu, int position, const std::vector<int>& reserveList, bool pendingSwap = false, int pendingTeamSlot = -1, int pendingReserveSlot = -1);
     void SelectShowItem();
     void ShowItem(int menuSelection, int selectedIndex = -1, bool inSubmenu = false);
     void ShowShop(int shopId);
@@ -89,11 +91,23 @@ public:
     
     int WaitForKeyPress();
     void WaitAnyKey(int* keycode, int* x, int* y);
+
+    // Pascal InputAmount / InputBox (instruct_50e 51 / 50)
+    int InputAmount();
+    std::string ShowInputBox(const std::string& titleUtf8, const std::string& defaultUtf8);
+
+    // Roaming UI (kys_main / kys_engine)
+    void ShowMap();
+    void FourPets();
+    bool PetStatus(int petIndex, int menu);
+    bool MenuDifficult();
+    void CheckHotkey(SDL_Keycode key);
     
     // Screen Effects
     void FadeScreen(bool fadeIn);
     void FlashScreen(uint32_t color, int durationMs);
     void CaptureScreen(); // Capture current frame for translucent menus
+    void ReleaseMenuBackground(); // Clear captured menu backdrop after load
 
     // Force screen update (for blocking loops)
     void UpdateScreen();

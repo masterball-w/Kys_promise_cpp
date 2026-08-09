@@ -58,16 +58,28 @@ namespace {
         return -1;
     }
 
+    // DrawShadowTextUtf8 packs colors as (r<<24)|(g<<16)|(b<<8)|a — NOT SDL ARGB.
+    // getPaletteColor returns (a<<24)|(r<<16)|(g<<8)|b; convert between the two.
     uint32_t PaletteIndexToColor(uint8_t index) {
-        uint32_t argb = GraphicsUtils::getPaletteColor(index);
-        if (argb == 0) return 0;
-        uint32_t a = (argb >> 24) & 0xFF;
-        uint32_t r = (argb >> 16) & 0xFF;
-        uint32_t g = (argb >> 8) & 0xFF;
-        uint32_t b = argb & 0xFF;
-        return (r << 24) | (g << 16) | (b << 8) | a;
+        uint32_t argb = GraphicsUtils::getUIPaletteColor(index);
+        if (argb == 0) return 0x000000FF;
+        uint8_t a = (argb >> 24) & 0xFF;
+        uint8_t r = (argb >> 16) & 0xFF;
+        uint8_t g = (argb >> 8) & 0xFF;
+        uint8_t b = argb & 0xFF;
+        if (a == 0) a = 255;
+        return (static_cast<uint32_t>(r) << 24) |
+               (static_cast<uint32_t>(g) << 16) |
+               (static_cast<uint32_t>(b) << 8) |
+               a;
     }
 
+    uint32_t ResolveTextColor(uint32_t color) {
+        if ((color & 0x00FFFFFF) == 0x00FFFFFF) {
+            return PaletteIndexToColor(static_cast<uint8_t>((color >> 24) & 0xFF));
+        }
+        return color;
+    }
     void DrawStatusBar(int x, int y, int currentValue, int maxValue, uint8_t fillColorIndex) {
         uint32_t bgColor = PaletteIndexToColor(0);
         uint32_t fillColor = PaletteIndexToColor(fillColorIndex);
@@ -82,14 +94,6 @@ namespace {
         UIManager::getInstance().DrawFilledRect(x + 1, y + 14, 50, 1, highlightColor, 3);
     }
 
-    uint32_t ResolveTextColor(uint32_t color) {
-        if ((color & 0x00FFFFFF) == 0x00FFFFFF) {
-            uint32_t mapped = PaletteIndexToColor((color >> 24) & 0xFF);
-            if (mapped != 0) return mapped;
-        }
-        return color;
-    }
-
     std::vector<int> GetValidTeamList() {
         const auto& team = GameManager::getInstance().getTeamList();
         std::vector<int> result;
@@ -98,6 +102,78 @@ namespace {
             if (id >= 0) result.push_back(id);
         }
         return result;
+    }
+
+    bool NextUtf8Codepoint(const std::string& text, size_t& index, uint32_t& codepoint) {
+        if (index >= text.size()) return false;
+        const unsigned char c = static_cast<unsigned char>(text[index]);
+        if (c < 0x80) {
+            codepoint = c;
+            ++index;
+            return true;
+        }
+        if ((c & 0xE0) == 0xC0 && index + 1 < text.size()) {
+            codepoint = ((c & 0x1F) << 6) | (static_cast<unsigned char>(text[index + 1]) & 0x3F);
+            index += 2;
+            return true;
+        }
+        if ((c & 0xF0) == 0xE0 && index + 2 < text.size()) {
+            codepoint = ((c & 0x0F) << 12) |
+                        ((static_cast<unsigned char>(text[index + 1]) & 0x3F) << 6) |
+                        (static_cast<unsigned char>(text[index + 2]) & 0x3F);
+            index += 3;
+            return true;
+        }
+        if ((c & 0xF8) == 0xF0 && index + 3 < text.size()) {
+            codepoint = ((c & 0x07) << 18) |
+                        ((static_cast<unsigned char>(text[index + 1]) & 0x3F) << 12) |
+                        ((static_cast<unsigned char>(text[index + 2]) & 0x3F) << 6) |
+                        (static_cast<unsigned char>(text[index + 3]) & 0x3F);
+            index += 4;
+            return true;
+        }
+        ++index;
+        return false;
+    }
+
+    void BlitGlyphSurface(SDL_Renderer* renderer, SDL_Surface* surf, int x, int y) {
+        if (!surf) return;
+        SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
+        if (!tex) {
+            SDL_DestroySurface(surf);
+            return;
+        }
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_FRect dst = { (float)x, (float)y, (float)surf->w, (float)surf->h };
+        SDL_RenderTexture(renderer, tex, NULL, &dst);
+        SDL_DestroyTexture(tex);
+        SDL_DestroySurface(surf);
+    }
+
+    // Pascal DrawText: CJK glyph at (x_pos+10, y_pos) step 20; ASCII at (x_pos+10, y_pos+4) step 10.
+    void DrawTextGlyphPass(SDL_Renderer* renderer, TTF_Font* fontCjk, TTF_Font* fontEng,
+                           const std::string& text, int xPos, int yPos, SDL_Color color) {
+        if (!fontCjk) return;
+        if (!fontEng) fontEng = fontCjk;
+
+        int x = xPos;
+        size_t i = 0;
+        uint32_t cp = 0;
+        while (NextUtf8Codepoint(text, i, cp)) {
+            if (cp == 0) break;
+            if (cp == '*') {
+                x = xPos;
+                yPos += 19;
+                continue;
+            }
+
+            TTF_Font* useFont = (cp > 128) ? fontCjk : fontEng;
+            const int destX = x + 10;
+            const int destY = yPos + ((cp > 128) ? 0 : 4);
+            SDL_Surface* surf = TTF_RenderGlyph_Blended(useFont, cp, color);
+            BlitGlyphSurface(renderer, surf, destX, destY);
+            x += (cp > 128) ? 20 : 10;
+        }
     }
 
     struct StatusPulse {
@@ -170,6 +246,81 @@ namespace {
         } else {
             max1 = PaletteIndexColor(0x21);
             max2 = PaletteIndexColor(0x23);
+        }
+    }
+
+    constexpr int kPartySidebarBoxX = 15;
+    constexpr int kPartySidebarBoxY = 15;
+    constexpr int kPartySidebarTextX = 8;
+    constexpr int kPartySidebarTextY0 = 28;
+    constexpr int kPartySidebarRowH = 22;
+
+    void DrawPartySidebar(const std::vector<int>& team, int selectedRoleId) {
+        if (team.empty()) return;
+        UIManager::getInstance().DrawRectangle(
+            kPartySidebarBoxX, kPartySidebarBoxY, 90,
+            10 + static_cast<int>(team.size()) * kPartySidebarRowH,
+            0x00000000, 0xFFFFFFFF, 30);
+        for (size_t i = 0; i < team.size(); ++i) {
+            int id = team[i];
+            uint32_t color1 = (id == selectedRoleId) ? 0x64FFFFFF : 0x05FFFFFF;
+            uint32_t color2 = (id == selectedRoleId) ? 0x66FFFFFF : 0x07FFFFFF;
+            std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(
+                GameManager::getInstance().getRole(id).getName());
+            UIManager::getInstance().DrawShadowTextUtf8(
+                nameUtf8,
+                kPartySidebarTextX,
+                kPartySidebarTextY0 + static_cast<int>(i) * kPartySidebarRowH,
+                color1, color2);
+        }
+    }
+
+    std::vector<int> BuildReserveRoleList() {
+        std::vector<int> reserve(26, -1);
+        auto& game = GameManager::getInstance();
+        int count = 0;
+        for (int i = 1; i < game.getRoleCount(); ++i) {
+            if (game.getRole(i).getTeamState() == 2 && count < 26) {
+                reserve[count++] = i;
+            }
+        }
+        return reserve;
+    }
+
+    void SwapTeamSlots(int slotA, int slotB) {
+        auto& game = GameManager::getInstance();
+        int roleA = game.getTeamMember(slotA);
+        int roleB = game.getTeamMember(slotB);
+        game.setTeamMember(slotA, roleB);
+        game.setTeamMember(slotB, roleA);
+    }
+
+    void PerformTeammateSwap(int teamSlot, int reserveSlot, std::vector<int>& reserveList) {
+        auto& game = GameManager::getInstance();
+        int teamRoleId = game.getTeamMember(teamSlot);
+        int reserveRoleId = (reserveSlot >= 0 && reserveSlot < (int)reserveList.size()) ? reserveList[reserveSlot] : -1;
+
+        if (teamRoleId > 0) game.getRole(teamRoleId).setTeamState(2);
+        if (reserveRoleId > 0) game.getRole(reserveRoleId).setTeamState(1);
+
+        game.setTeamMember(teamSlot, reserveRoleId);
+        if (reserveSlot >= 0 && reserveSlot < (int)reserveList.size()) {
+            reserveList[reserveSlot] = teamRoleId;
+        }
+    }
+
+    void CompactTeamList() {
+        auto& game = GameManager::getInstance();
+        std::vector<int> packed(6, -1);
+        int write = 0;
+        for (int i = 0; i < 6; ++i) {
+            int id = game.getTeamMember(i);
+            if (id >= 0 && write < 6) {
+                packed[write++] = id;
+            }
+        }
+        for (int i = 0; i < 6; ++i) {
+            game.setTeamMember(i, packed[i]);
         }
     }
 }
@@ -435,6 +586,13 @@ void UIManager::CaptureScreen() {
     }
 }
 
+void UIManager::ReleaseMenuBackground() {
+    if (m_texMenuBackground) {
+        SDL_DestroyTexture(m_texMenuBackground);
+        m_texMenuBackground = nullptr;
+    }
+}
+
 void UIManager::EnsureSaveLoadBackground() {
     if (m_saveLoadBgChecked) return;
     m_saveLoadBgChecked = true;
@@ -492,40 +650,47 @@ void UIManager::DrawFilledRect(int x, int y, int w, int h, uint32_t color, int a
 }
 
 void UIManager::DrawShadowTextUtf8(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize) {
-    TTF_Font* useFont = (m_fontEnglish && IsAsciiOnly(text)) ? m_fontEnglish : m_font;
-    if (!useFont) return;
-    
+    if (!m_font) return;
+  (void)fontSize;
+
     std::string displayText = TextManager::getInstance().traditionalToSimplified(text);
-    
+
     color1 = ResolveTextColor(color1);
     color2 = ResolveTextColor(color2);
 
     SDL_Color c2 = { (Uint8)((color2 >> 24) & 0xFF), (Uint8)((color2 >> 16) & 0xFF), (Uint8)((color2 >> 8) & 0xFF), (Uint8)(color2 & 0xFF) };
     SDL_Color c1 = { (Uint8)((color1 >> 24) & 0xFF), (Uint8)((color1 >> 16) & 0xFF), (Uint8)((color1 >> 8) & 0xFF), (Uint8)(color1 & 0xFF) };
-    
-    SDL_Surface* surf2 = TTF_RenderText_Blended(useFont, displayText.c_str(), 0, c2);
-    if (surf2) {
-        SDL_Texture* tex2 = SDL_CreateTextureFromSurface(m_renderer, surf2);
-        SDL_SetTextureBlendMode(tex2, SDL_BLENDMODE_BLEND);
-        SDL_FRect dst2 = { (float)(x + 1), (float)y, (float)surf2->w, (float)surf2->h };
-        SDL_RenderTexture(m_renderer, tex2, NULL, &dst2);
-        SDL_DestroyTexture(tex2);
-        SDL_DestroySurface(surf2);
-    }
-    
-    SDL_Surface* surf1 = TTF_RenderText_Blended(useFont, displayText.c_str(), 0, c1);
-    if (surf1) {
-        SDL_Texture* tex1 = SDL_CreateTextureFromSurface(m_renderer, surf1);
-        SDL_SetTextureBlendMode(tex1, SDL_BLENDMODE_BLEND);
-        SDL_FRect dst1 = { (float)x, (float)y, (float)surf1->w, (float)surf1->h };
-        SDL_RenderTexture(m_renderer, tex1, NULL, &dst1);
-        SDL_DestroyTexture(tex1);
-        SDL_DestroySurface(surf1);
+
+    TTF_Font* engFont = m_fontEnglish ? m_fontEnglish : m_font;
+    DrawTextGlyphPass(m_renderer, m_font, engFont, displayText, x + 1, y, c2);
+    DrawTextGlyphPass(m_renderer, m_font, engFont, displayText, x, y, c1);
+}
+
+void UIManager::DrawTextWithRectUtf8(const std::string& text, int x, int y, int w, uint32_t color1, uint32_t color2) {
+    uint32_t frame = PaletteIndexToColor(255);
+    DrawRectangle(x, y, w, 28, 0, frame, 30);
+    DrawShadowTextUtf8(text, x - 17, y + 2, color1, color2);
+}
+
+void UIManager::DrawCommonMenu2(int x, int y, int w, int selection, const std::string& opt0, const std::string& opt1) {
+    uint32_t frame = PaletteIndexToColor(255);
+    DrawRectangle(x, y, w, 28, 0, frame, 30);
+    if (selection == 0) {
+        DrawShadowTextUtf8(opt0, x - 17, y + 2, 0x64FFFFFF, 0x66FFFFFF);
+        DrawShadowTextUtf8(opt1, x - 17 + 50, y + 2, 0x05FFFFFF, 0x07FFFFFF);
+    } else {
+        DrawShadowTextUtf8(opt0, x - 17, y + 2, 0x05FFFFFF, 0x07FFFFFF);
+        DrawShadowTextUtf8(opt1, x - 17 + 50, y + 2, 0x64FFFFFF, 0x66FFFFFF);
     }
 }
 
-void UIManager::DrawHead(int headId, int x, int y, int green, int red, int gray) {
+void UIManager::DrawHead(int headId, int x, int y, int green, int red, int gray, bool drawFrame, int picYOffset) {
     if (headId < 0) return; // Prevent invalid head index
+
+    if (drawFrame) {
+        // Pascal DrawHeadPic: DrawRectangle(px, py - 57, 57, 59, 0, colcolor(255), 0)
+        DrawRectangle(x, y - 57, 57, 59, 0, PaletteIndexToColor(255), 0);
+    }
 
     PicImage pic = PicLoader::loadPic("resource/Heads.Pic", headId);
     if (pic.surface) {
@@ -533,7 +698,7 @@ void UIManager::DrawHead(int headId, int x, int y, int green, int red, int gray)
          SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
          // Apply offset like Pascal: x1 := px - Head_Pic[num].x + 1; y1 := py - Head_Pic[num].y + 1;
          float drawX = (float)(x - pic.x + 1);
-         float drawY = (float)(y - pic.y + 1);
+         float drawY = (float)(y - pic.y + 1 + picYOffset);
          SDL_FRect dest = { drawX, drawY, (float)pic.surface->w, (float)pic.surface->h };
          if (green > 0 || red > 0 || gray > 0) {
              int rMod = 255;
@@ -621,7 +786,7 @@ void UIManager::RenderMenuSystem(int menuSelection) {
     }
 }
 
-void UIManager::ShowMenu() {
+bool UIManager::ShowMenu() {
     if (!m_texMenuEsc) LoadSystemGraphics();
 
     GameManager::getInstance().RenderScreenTo(m_renderer);
@@ -635,7 +800,7 @@ void UIManager::ShowMenu() {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 GameManager::getInstance().Quit();
-                return;
+                return false;
             }
             if (event.type == SDL_EVENT_KEY_DOWN) {
                  if (event.key.key == SDLK_ESCAPE) {
@@ -660,7 +825,11 @@ void UIManager::ShowMenu() {
                  if (event.key.key == SDLK_SPACE || event.key.key == SDLK_RETURN) {
                      if (currentSelection == 0) SelectShowMagic();
                      else if (currentSelection == 1) SelectShowStatus();
-                     else if (currentSelection == 2) SelectShowSystem();
+                     else if (currentSelection == 2) {
+                         if (SelectShowSystem()) {
+                             return true;
+                         }
+                     }
                      else if (currentSelection == 3) SelectShowTeammate();
                      else if (currentSelection == 4) SelectShowSkill();
                      else if (currentSelection == 5) SelectShowItem();
@@ -679,6 +848,7 @@ void UIManager::ShowMenu() {
         VirtualControls::present(m_renderer);
         SDL_Delay(16);
     }
+    return false;
 }
 
 void UIManager::SelectShowStatus() {
@@ -732,6 +902,10 @@ void UIManager::SelectShowStatus() {
 void UIManager::DrawEngShadowText(const std::string& text, int x, int y, uint32_t color1, uint32_t color2, int fontSize) {
     TTF_Font* useFont = m_fontEnglish ? m_fontEnglish : m_font;
     if (!useFont) return;
+
+    // Pascal DrawEngText: dest.x = x_pos; dest.y = y_pos + 4 (no +10 glyph origin).
+    (void)fontSize;
+    y += 4;
 
     color1 = ResolveTextColor(color1);
     color2 = ResolveTextColor(color2);
@@ -1010,22 +1184,12 @@ void UIManager::ShowStatus(int roleId) {
     
     Role& role = GameManager::getInstance().getRole(roleId);
     const auto team = GetValidTeamList();
-    int textOffsetX = 8;
-    int textOffsetY = 4;
-    int headOffsetY = 6;
 
-    // Draw Team List
-    DrawRectangle(15, 15, 90, 10 + team.size() * 22, 0x00000000, 0xFFFFFFFF, 30);
-    for (size_t i = 0; i < team.size(); ++i) {
-        int id = team[i];
-        Role& r = GameManager::getInstance().getRole(id);
-        uint32_t color = (id == roleId) ? 0xFFFFFFFF : 0xFFFF00FF;
-        std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(r.getName());
-        DrawShadowTextUtf8(nameUtf8, 20 + textOffsetX, 20 + i * 22 + textOffsetY, color, 0x000000FF);
-    }
+    DrawPartySidebar(team, roleId);
 
     StatusPulse pulse = ComputeStatusPulse(role.getPoision(), role.getHurt(), 0);
-    DrawHead(role.getHeadNum(), 137, 88, pulse.green, pulse.red, pulse.gray);
+    // STATE_PIC already has portrait frame art — skip programmatic frame, nudge portrait down.
+    DrawHead(role.getHeadNum(), 137, 88, pulse.green, pulse.red, pulse.gray, false, 6);
 
     // Pascal NewShowStatus: draw equipment icons onto background slots before overlay text.
     if (role.getEquip(0) >= 0) DrawItemPicWithOffset(role.getEquip(0), 411, 144);
@@ -1034,30 +1198,31 @@ void UIManager::ShowStatus(int roleId) {
     if (role.getEquip(3) >= 0) DrawItemPicWithOffset(role.getEquip(3), 466, 318);
 
     std::string roleNameUtf8 = TextManager::getInstance().gbkToUtf8(role.getName());
-    DrawShadowTextUtf8(roleNameUtf8, 115, 93, 0x64FFFFFF, 0x66FFFFFF);
- 
+    DrawShadowTextUtf8(roleNameUtf8, 108, 96, 0x64FFFFFF, 0x66FFFFFF);
+
+    // Exact Pascal NewShowStatus / UpdateHpMp coordinates — no local text/head offset hacks.
     int x = 90;
     int y = 0;
-    DrawShadowTextUtf8("  等級", x + 25 + textOffsetX, y + 94 + 21 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8("  經驗", x + 25 + textOffsetX, y + 94 + 42 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8("  升級", x + 25 + textOffsetX, y + 94 + 63 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8("  攻擊", x + 25 + textOffsetX, y + 115 + 21 * 3 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  防禦", x + 25 + textOffsetX, y + 115 + 21 * 4 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  輕功", x + 25 + textOffsetX, y + 115 + 21 * 5 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  醫療能力", x + 25 + textOffsetX, y + 115 + 21 * 6 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  用毒能力", x + 25 + textOffsetX, y + 115 + 21 * 7 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  解毒能力", x + 25 + textOffsetX, y + 115 + 21 * 8 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  拳掌功夫", x + 25 + textOffsetX, y + 115 + 21 * 9 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  御劍能力", x + 25 + textOffsetX, y + 115 + 21 * 10 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  耍刀技巧", x + 25 + textOffsetX, y + 115 + 21 * 11 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  奇門兵器", x + 25 + textOffsetX, y + 115 + 21 * 12 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  暗器技巧", x + 25 + textOffsetX, y + 115 + 21 * 13 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
- 
-    DrawShadowTextUtf8("  中毒", x + 25 + 79 + textOffsetX, y + 115 - 21 + textOffsetY, 0x30FFFFFF, 0x32FFFFFF);
-    DrawShadowTextUtf8(std::to_string(role.getPoision()), x + 25 + 150 + textOffsetX, y + 115 - 21 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8("  內傷", x + 30 + 179 + textOffsetX, y + 115 - 21 + textOffsetY, 0x13FFFFFF, 0x16FFFFFF);
-    DrawShadowTextUtf8(std::to_string(role.getHurt()), x + 125 + 155 + textOffsetX, y + 115 - 21 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
- 
+    DrawShadowTextUtf8(" 等級", x + 25, y + 94 + 21, 0x21FFFFFF, 0x23FFFFFF);
+    DrawShadowTextUtf8(" 經驗", x + 25, y + 94 + 42, 0x21FFFFFF, 0x23FFFFFF);
+    DrawShadowTextUtf8(" 升級", x + 25, y + 94 + 63, 0x21FFFFFF, 0x23FFFFFF);
+    DrawShadowTextUtf8(" 攻擊", x + 25, y + 115 + 21 * 3, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 防禦", x + 25, y + 115 + 21 * 4, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 輕功", x + 25, y + 115 + 21 * 5, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 醫療能力", x + 25, y + 115 + 21 * 6, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 用毒能力", x + 25, y + 115 + 21 * 7, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 解毒能力", x + 25, y + 115 + 21 * 8, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 拳掌功夫", x + 25, y + 115 + 21 * 9, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 御劍能力", x + 25, y + 115 + 21 * 10, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 耍刀技巧", x + 25, y + 115 + 21 * 11, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 奇門兵器", x + 25, y + 115 + 21 * 12, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 暗器技巧", x + 25, y + 115 + 21 * 13, 0x63FFFFFF, 0x66FFFFFF);
+
+    DrawShadowTextUtf8(" 中毒", x + 25 + 79, y + 115 - 21, 0x30FFFFFF, 0x32FFFFFF);
+    DrawShadowTextUtf8(std::to_string(role.getPoision()), x + 25 + 150, y + 115 - 21, 0x63FFFFFF, 0x66FFFFFF);
+    DrawShadowTextUtf8(" 內傷", x + 30 + 179, y + 115 - 21, 0x13FFFFFF, 0x16FFFFFF);
+    DrawShadowTextUtf8(std::to_string(role.getHurt()), x + 125 + 155, y + 115 - 21, 0x63FFFFFF, 0x66FFFFFF);
+
     int addatk = 0, adddef = 0, addspeed = 0;
     for (int i = 0; i < 5; ++i) {
         int itemId = role.getEquip(i);
@@ -1074,69 +1239,34 @@ void UIManager::ShowStatus(int roleId) {
         adddef += -25;
     }
     auto fmtBasePlus = [](int base, int add) {
-        if (add > 0) return std::to_string(base) + "+" + std::to_string(add);
-        if (add < 0) return std::to_string(base) + "-" + std::to_string(-add);
-        return std::to_string(base);
+        if (add > 0) return FormatPaddedNumber(base, 4) + "+" + std::to_string(add);
+        if (add < 0) return FormatPaddedNumber(base, 4) + "-" + std::to_string(-add);
+        return FormatPaddedNumber(base, 4);
     };
-    DrawShadowTextUtf8(fmtBasePlus(GameManager::getInstance().GetRoleAttack(roleId, false), addatk), x + 145 + textOffsetX, y + 115 + 21 * 3 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(fmtBasePlus(GameManager::getInstance().GetRoleDefence(roleId, false), adddef), x + 145 + textOffsetX, y + 115 + 21 * 4 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(fmtBasePlus(GameManager::getInstance().GetRoleSpeed(roleId, false), addspeed), x + 145 + textOffsetX, y + 115 + 21 * 5 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
- 
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleMedcine(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 6 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleUsePoi(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 7 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleMedPoi(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 8 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleFist(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 9 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleSword(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 10 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleKnife(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 11 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleUnusual(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 12 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(GameManager::getInstance().GetRoleHidWeapon(roleId, true)), x + 145 + textOffsetX, y + 115 + 21 * 13 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
- 
+    DrawEngShadowText(fmtBasePlus(GameManager::getInstance().GetRoleAttack(roleId, false), addatk), x + 145, y + 115 + 21 * 3, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(fmtBasePlus(GameManager::getInstance().GetRoleDefence(roleId, false), adddef), x + 145, y + 115 + 21 * 4, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(fmtBasePlus(GameManager::getInstance().GetRoleSpeed(roleId, false), addspeed), x + 145, y + 115 + 21 * 5, 0x05FFFFFF, 0x07FFFFFF);
 
-    DrawShadowTextUtf8(std::to_string(role.getLevel()), x + 145 + textOffsetX, y + 115 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8(std::to_string(role.getExp()), x + 135 + textOffsetX, y + 136 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleMedcine(roleId, true), 4), x + 145, y + 115 + 21 * 6, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleUsePoi(roleId, true), 4), x + 145, y + 115 + 21 * 7, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleMedPoi(roleId, true), 4), x + 145, y + 115 + 21 * 8, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleFist(roleId, true), 4), x + 145, y + 115 + 21 * 9, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleSword(roleId, true), 4), x + 145, y + 115 + 21 * 10, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleKnife(roleId, true), 4), x + 145, y + 115 + 21 * 11, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleUnusual(roleId, true), 4), x + 145, y + 115 + 21 * 12, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(GameManager::getInstance().GetRoleHidWeapon(roleId, true), 4), x + 145, y + 115 + 21 * 13, 0x05FFFFFF, 0x07FFFFFF);
+
+    DrawEngShadowText(FormatPaddedNumber(role.getLevel(), 4), x + 145, y + 115, 0x05FFFFFF, 0x07FFFFFF);
+    DrawEngShadowText(FormatPaddedNumber(role.getExp(), 5), x + 135, y + 136, 0x05FFFFFF, 0x07FFFFFF);
     int nextExp = GameManager::getInstance().getNextLevelExp(role.getLevel());
     if (nextExp < 0) {
-        DrawShadowTextUtf8("    =", x + 135 + textOffsetX, y + 157 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+        DrawEngShadowText("    =", x + 135, y + 157, 0x05FFFFFF, 0x07FFFFFF);
     } else {
-        DrawShadowTextUtf8(std::to_string(nextExp), x + 135 + textOffsetX, y + 157 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
+        DrawEngShadowText(FormatPaddedNumber(nextExp, 5), x + 135, y + 157, 0x05FFFFFF, 0x07FFFFFF);
     }
 
-    int hpBaseX = x + 80 + 25;
-    int hpBaseY = y - 85 + 94;
-    DrawShadowTextUtf8("  生命", hpBaseX + textOffsetX, hpBaseY + 21 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8("  內力", hpBaseX + textOffsetX, hpBaseY + 42 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8("  體力", hpBaseX + textOffsetX, hpBaseY + 63 + textOffsetY, 0x21FFFFFF, 0x23FFFFFF);
-    uint32_t hpCur1 = 0;
-    uint32_t hpCur2 = 0;
-    uint32_t hpMax1 = 0;
-    uint32_t hpMax2 = 0;
-    ResolveHpColors(role, hpCur1, hpCur2, hpMax1, hpMax2);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getCurrentHP(), 4), hpBaseX + 125 + textOffsetX, hpBaseY + 21 + textOffsetY, hpCur1, hpCur2);
-    DrawShadowTextUtf8("/", hpBaseX + 165 + textOffsetX, hpBaseY + 21 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getMaxHP(), 4), hpBaseX + 175 + textOffsetX, hpBaseY + 21 + textOffsetY, hpMax1, hpMax2);
-    
-    uint8_t hpBarColor = 0x07;
-    if (role.getHurt() >= 67) hpBarColor = 0x16;
-    else if (role.getHurt() >= 34) hpBarColor = 0x0E;
-    DrawStatusBar(hpBaseX + 65 + textOffsetX, hpBaseY + 22 + textOffsetY, role.getCurrentHP(), role.getMaxHP(), hpBarColor);
-    
-    uint8_t mpColor1 = 0x63, mpColor2 = 0x66;
-    uint8_t mpBarColor = 0x66;
-    if (role.getMPType() == 1) {
-        mpColor1 = 0x4E; mpColor2 = 0x50; mpBarColor = 0x50;
-    } else if (role.getMPType() == 0) {
-        mpColor1 = 0x05; mpColor2 = 0x07; mpBarColor = 0x07;
-    }
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getCurrentMP(), 4), hpBaseX + 125 + textOffsetX, hpBaseY + 42 + textOffsetY, ((uint32_t)mpColor1 << 24) | 0xFFFFFF, ((uint32_t)mpColor2 << 24) | 0xFFFFFF);
-    DrawShadowTextUtf8("/", hpBaseX + 165 + textOffsetX, hpBaseY + 42 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getMaxMP(), 4), hpBaseX + 175 + textOffsetX, hpBaseY + 42 + textOffsetY, ((uint32_t)mpColor1 << 24) | 0xFFFFFF, ((uint32_t)mpColor2 << 24) | 0xFFFFFF);
-    if (role.getMaxMP() > 0) {
-        DrawStatusBar(hpBaseX + 65 + textOffsetX, hpBaseY + 43 + textOffsetY, role.getCurrentMP(), role.getMaxMP(), mpBarColor);
-    }
-    
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getPhyPower(), 4), hpBaseX + 125 + textOffsetX, hpBaseY + 63 + textOffsetY, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8("/100", hpBaseX + 165 + textOffsetX, hpBaseY + 63 + textOffsetY, 0x63FFFFFF, 0x66FFFFFF);
-    DrawStatusBar(hpBaseX + 65 + textOffsetX, hpBaseY + 64 + textOffsetY, role.getPhyPower(), MAX_PHYSICAL_POWER, 0x46);
+    // Pascal UpdateHpMp(rnum, x + 80 + 25, y - 85 + 94)
+    DrawHpMpStatus(roleId, x + 80 + 25, y - 85 + 94);
  
     DrawShadowTextUtf8(" 武器", x + 190, y + 115 + 21 * 9, 0x05FFFFFF, 0x07FFFFFF);
     if (role.getEquip(0) >= 0) {
@@ -1240,80 +1370,31 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
 
     Role& role = GameManager::getInstance().getRole(roleId);
     const auto team = GetValidTeamList();
-    int textOffsetX = 8;
-    int extraSkillOffsetX = 6;
-    int headOffsetY = 6;
 
-    // Draw Team List
-    DrawRectangle(15, 15, 90, 10 + team.size() * 22, 0x00000000, 0xFFFFFFFF, 30);
-    for (size_t i = 0; i < team.size(); ++i) {
-        int id = team[i];
-        Role& r = GameManager::getInstance().getRole(id);
-        uint32_t color = (id == roleId) ? 0xFFFFFFFF : 0xFFFF00FF;
-        std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(r.getName());
-        DrawShadowTextUtf8(nameUtf8, 20 + textOffsetX, 20 + i * 22, color, 0x000000FF);
-    }
+    DrawPartySidebar(team, roleId);
 
     StatusPulse pulse = ComputeStatusPulse(role.getPoision(), role.getHurt(), 0);
-    DrawHead(role.getHeadNum(), 137, 88 + headOffsetY, pulse.green, pulse.red, pulse.gray);
+    DrawHead(role.getHeadNum(), 137, 88, pulse.green, pulse.red, pulse.gray, false, 6);
     std::string roleNameUtf8 = TextManager::getInstance().gbkToUtf8(role.getName());
-    DrawShadowTextUtf8(roleNameUtf8, 115 + textOffsetX, 93, 0xFFFFFFFF, 0x000000FF);
+    DrawShadowTextUtf8(roleNameUtf8, 108, 96, 0x64FFFFFF, 0x66FFFFFF);
 
     int x = 90;
     int y = 0;
 
-    int hpMpX = x + 25 + textOffsetX;
-    int hpMpY = y + 94;
-    
-    DrawShadowTextUtf8(" 生命", hpMpX, hpMpY + 21, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8(" 內力", hpMpX, hpMpY + 42, 0x21FFFFFF, 0x23FFFFFF);
-    DrawShadowTextUtf8(" 體力", hpMpX, hpMpY + 63, 0x21FFFFFF, 0x23FFFFFF);
-
-    // HP
-    uint32_t hpCur1 = 0;
-    uint32_t hpCur2 = 0;
-    uint32_t hpMax1 = 0;
-    uint32_t hpMax2 = 0;
-    ResolveHpColors(role, hpCur1, hpCur2, hpMax1, hpMax2);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getCurrentHP(), 4), hpMpX + 125, hpMpY + 21, hpCur1, hpCur2);
-    DrawShadowTextUtf8("/", hpMpX + 165, hpMpY + 21, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getMaxHP(), 4), hpMpX + 175, hpMpY + 21, hpMax1, hpMax2);
-    uint8_t hpBarColor = 0x07;
-    if (role.getHurt() >= 67) hpBarColor = 0x16;
-    else if (role.getHurt() >= 34) hpBarColor = 0x0E;
-    DrawStatusBar(hpMpX + 65, hpMpY + 24, role.getCurrentHP(), role.getMaxHP(), hpBarColor);
-    
-    // MP
-    uint8_t mpColor1 = 0x63, mpColor2 = 0x66;
-    uint8_t mpBarColor = 0x66;
-    if (role.getMPType() == 1) {
-        mpColor1 = 0x4E; mpColor2 = 0x50; mpBarColor = 0x50;
-    } else if (role.getMPType() == 0) {
-        mpColor1 = 0x05; mpColor2 = 0x07; mpBarColor = 0x07;
-    }
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getCurrentMP(), 4), hpMpX + 125, hpMpY + 42, ((uint32_t)mpColor1 << 24) | 0xFFFFFF, ((uint32_t)mpColor2 << 24) | 0xFFFFFF);
-    DrawShadowTextUtf8("/", hpMpX + 165, hpMpY + 42, 0x63FFFFFF, 0x66FFFFFF);
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getMaxMP(), 4), hpMpX + 175, hpMpY + 42, ((uint32_t)mpColor1 << 24) | 0xFFFFFF, ((uint32_t)mpColor2 << 24) | 0xFFFFFF);
-    if (role.getMaxMP() > 0) {
-        DrawStatusBar(hpMpX + 65, hpMpY + 45, role.getCurrentMP(), role.getMaxMP(), mpBarColor);
-    }
-    
-    // PhyPower
-    DrawShadowTextUtf8(FormatPaddedNumber(role.getPhyPower(), 4), hpMpX + 125, hpMpY + 63, 0x05FFFFFF, 0x07FFFFFF);
-    DrawShadowTextUtf8("/100", hpMpX + 165, hpMpY + 63, 0x63FFFFFF, 0x66FFFFFF);
-    DrawStatusBar(hpMpX + 65, hpMpY + 66, role.getPhyPower(), MAX_PHYSICAL_POWER, 0x46);
+    // Pascal UpdateHpMp(rnum, x + 25, y + 94)
+    DrawHpMpStatus(roleId, x + 25, y + 94);
 
     // Practice Item
-    DrawShadowTextUtf8(" 修煉物品", x + 110 + textOffsetX, y + 216, 0xFFD700FF, 0x000000FF);
+    DrawShadowTextUtf8(" 修煉物品", x + 110, y + 216, 0x21FFFFFF, 0x23FFFFFF);
     if (role.getPracticeBook() >= 0) {
         Item& book = GameManager::getInstance().getItem(role.getPracticeBook());
         std::string bookNameUtf8 = TextManager::getInstance().gbkToUtf8(book.getName());
-        DrawShadowTextUtf8(bookNameUtf8, x + 110 + textOffsetX, y + 237, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(bookNameUtf8, x + 110, y + 237, 0x64FFFFFF, 0x66FFFFFF);
         
         // Draw Item Pic
         DrawItemPicWithOffset(role.getPracticeBook(), 136, 208);
         
-        // Draw Exp Progress
+        // Draw Exp Progress — Pascal DrawEngShadowText
         int needExp = 0;
         if (book.getMagic() >= 0) {
             int magicId = book.getMagic();
@@ -1326,7 +1407,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             }
             Magic& magic = GameManager::getInstance().getMagic(magicId);
             if (magic.getMagicType() == 5 && magicLevel >= 0) {
-                DrawShadowTextUtf8(std::to_string(role.getExpForBook()) + "/=", x + 137 + textOffsetX, y + 258, 0xFFFFFFFF, 0x000000FF);
+                DrawEngShadowText(std::to_string(role.getExpForBook()) + "/=", x + 137, y + 258, 0x64FFFFFF, 0x66FFFFFF);
             } else if (magicLevel < 900) {
                 int aptitude = role.getAptitude();
                 if (GameManager::getInstance().CheckEquipSet(role.getEquip(0), role.getEquip(1), role.getEquip(2), role.getEquip(3)) == 2) {
@@ -1337,9 +1418,9 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
                 } else {
                     needExp = ((-book.getNeedExp()) * (1 + magicLevel / 100) * (1 + aptitude / 15)) / 2;
                 }
-                DrawShadowTextUtf8(std::to_string(role.getExpForBook()) + "/" + std::to_string(needExp), x + 137 + textOffsetX, y + 258, 0xFFFFFFFF, 0x000000FF);
+                DrawEngShadowText(std::to_string(role.getExpForBook()) + "/" + std::to_string(needExp), x + 137, y + 258, 0x64FFFFFF, 0x66FFFFFF);
             } else {
-                DrawShadowTextUtf8(std::to_string(role.getExpForBook()) + "/=", x + 137 + textOffsetX, y + 258, 0xFFFFFFFF, 0x000000FF);
+                DrawEngShadowText(std::to_string(role.getExpForBook()) + "/=", x + 137, y + 258, 0x64FFFFFF, 0x66FFFFFF);
             }
         } else {
             int aptitude = role.getAptitude();
@@ -1351,15 +1432,15 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             } else {
                 needExp = ((-book.getNeedExp()) * (1 + aptitude / 15)) / 2;
             }
-            DrawShadowTextUtf8(std::to_string(role.getExpForBook()) + "/" + std::to_string(needExp), x + 137 + textOffsetX, y + 258, 0xFFFFFFFF, 0x000000FF);
+            DrawEngShadowText(std::to_string(role.getExpForBook()) + "/" + std::to_string(needExp), x + 137, y + 258, 0x64FFFFFF, 0x66FFFFFF);
         }
     } else {
-        DrawShadowTextUtf8(" 無", x + 110 + textOffsetX, y + 237, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8(" 無", x + 110, y + 237, 0x64FFFFFF, 0x66FFFFFF);
     }
 
     // Gongti Exp
-    DrawShadowTextUtf8(" 功體經驗", x + 25 + textOffsetX, y + 184, 0xFFD700FF, 0x000000FF);
-    DrawShadowTextUtf8(std::to_string(role.getGongtiExam()), x + 137 + textOffsetX, y + 184, 0xFFFFFFFF, 0x000000FF);
+    DrawShadowTextUtf8(" 功體經驗", x + 25, y + 184, 0x21FFFFFF, 0x23FFFFFF);
+    DrawEngShadowText(std::to_string(role.getGongtiExam()), x + 137, y + 184, 0x64FFFFFF, 0x66FFFFFF);
 
     // Special Skills (Top Right)
     const char* skills[] = { " 醫療", " 解毒", " 用毒", " 抗毒", " 毒攻", " " };
@@ -1371,11 +1452,11 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
         bool selected = (selectedIndex == i);
         uint32_t color = selected ? selectedColor : normalColor;
         uint32_t shadow = selected ? selectedShadow : normalShadow;
-        DrawShadowTextUtf8(skills[i], x + 248 + textOffsetX + extraSkillOffsetX + 78 * (i % 3), y + (i / 3) * 22 + 58, color, shadow);
+        DrawShadowTextUtf8(skills[i], x + 248 + 78 * (i % 3), y + (i / 3) * 22 + 58, color, shadow);
     }
 
     // Magic List
-    DrawShadowTextUtf8(" ————所會武功————", x + 247 + textOffsetX + extraSkillOffsetX, y + 102, 0xFFD700FF, 0x000000FF);
+    DrawShadowTextUtf8(" ————所會武功————", x + 247, y + 102, 0xFFD700FF, 0x000000FF);
     int gongtiId = role.getGongti();
     for (int i = 0; i < 10; ++i) {
         int magicId = role.getMagic(i);
@@ -1397,7 +1478,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
                 color = 0x05FFFFFF;
                 shadow = 0x07FFFFFF;
             }
-            DrawShadowTextUtf8(magicNameUtf8, x + 248 + textOffsetX + extraSkillOffsetX + 118 * (i % 2), y + (i / 2) * 22 + 124, color, shadow);
+            DrawShadowTextUtf8(magicNameUtf8, x + 248 + 118 * (i % 2), y + (i / 2) * 22 + 124, color, shadow);
         }
     }
 
@@ -1409,7 +1490,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             Magic& m = GameManager::getInstance().getMagic(magicId);
             
             std::string magicNameUtf8 = TextManager::getInstance().gbkToUtf8(m.getName());
-            DrawShadowTextUtf8(magicNameUtf8, x + 50 + textOffsetX, y + 320, 0x05FFFFFF, 0x07FFFFFF);
+            DrawShadowTextUtf8(magicNameUtf8, x + 50, y + 320, 0x05FFFFFF, 0x07FFFFFF);
             
             int magicLevel = role.getMagLevel(magicIndex);
             std::string levelStr;
@@ -1421,7 +1502,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             } else {
                 levelStr = std::to_string(magicLevel / 100 + 1);
             }
-            DrawShadowTextUtf8(levelStr, x + 188 + textOffsetX, y + 320, 0x05FFFFFF, 0x07FFFFFF);
+            DrawShadowTextUtf8(levelStr, x + 188, y + 320, 0x05FFFFFF, 0x07FFFFFF);
             
             std::string introGbk = m.getIntroduction();
             std::string formattedIntro;
@@ -1440,7 +1521,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
                 size_t nextPos = intro.find('*', pos);
                 if (nextPos == std::string::npos) nextPos = intro.length();
                 std::string line = intro.substr(pos, nextPos - pos);
-                DrawShadowTextUtf8(line, x + 50 + textOffsetX, lineY, 0x63FFFFFF, 0x66FFFFFF);
+                DrawShadowTextUtf8(line, x + 50, lineY, 0x63FFFFFF, 0x66FFFFFF);
                 lineY += 22;
                 lineCount++;
                 pos = nextPos + 1;
@@ -1449,7 +1530,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             if (m.getMagicType() != 5) {
                 int levelMultiplier = magicLevel / 100 + 1;
                 std::string mpStr = " 內力 " + std::to_string(m.getNeedMP() * levelMultiplier);
-                DrawShadowTextUtf8(mpStr, x + 50 + textOffsetX, lineY, 0x63FFFFFF, 0x66FFFFFF);
+                DrawShadowTextUtf8(mpStr, x + 50, lineY, 0x63FFFFFF, 0x66FFFFFF);
             } else {
                 int gLevel = GameManager::getInstance().GetGongtiLevel(roleId, magicId);
                 int attrY = y + 290;
@@ -1560,7 +1641,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
                     std::string stateName = GetBattleEffectDisplayName(m.getBattleState());
                     if (!stateName.empty()) {
                         DrawShadowTextUtf8(" " + stateName,
-                            x + 248 + textOffsetX,
+                            x + 248,
                             attrY + ((attrIdx + 1) / 2) * 22,
                             0x63FFFFFF, 0x66FFFFFF);
                     }
@@ -1584,7 +1665,7 @@ void UIManager::ShowMagic(int roleId, int selectedIndex) {
             size_t nextPos = desc.find('*', pos);
             if (nextPos == std::string::npos) nextPos = desc.length();
             std::string line = desc.substr(pos, nextPos - pos);
-            DrawShadowTextUtf8(line, x + 35 + textOffsetX, lineY, 0x63FFFFFF, 0x66FFFFFF);
+            DrawShadowTextUtf8(line, x + 35, lineY, 0x63FFFFFF, 0x66FFFFFF);
             lineY += 22;
             pos = nextPos + 1;
         }
@@ -1691,7 +1772,7 @@ void UIManager::ShowMedcine(int healerId, int menu) {
     }
     int x = 338;
     int y = 58;
-    int textOffsetX = 8;
+    int textOffsetX = 0; // Pascal glyph origin is handled in DrawShadowTextUtf8 (+10)
     DrawRectangle(x - 8, y - 18, 300, ((int)valid.size() + 1) * 22 + 26, 0x000000CC, 0xFFFFFFFF, 200);
     std::string title = " ——選擇隊友——";
     DrawShadowTextUtf8(title, 337 + textOffsetX, 36, 0x21FFFFFF, 0x23FFFFFF);
@@ -1719,7 +1800,7 @@ void UIManager::ShowMedPoision(int healerId, int menu) {
     }
     int x = 338;
     int y = 58;
-    int textOffsetX = 8;
+    int textOffsetX = 0; // Pascal glyph origin is handled in DrawShadowTextUtf8 (+10)
     DrawRectangle(x - 8, y - 18, 300, ((int)valid.size() + 1) * 22 + 26, 0x000000CC, 0xFFFFFFFF, 200);
     std::string title = " ——選擇隊友——";
     DrawShadowTextUtf8(title, 337 + textOffsetX, 36, 0x21FFFFFF, 0x23FFFFFF);
@@ -1961,7 +2042,7 @@ int UIManager::SelectItemUser(int menuSelection, int selectedIndex, int itemId, 
         ShowItem(menuSelection, selectedIndex, true);
         int x = 338;
         int y = 58;
-        int textOffsetX = 8;
+        int textOffsetX = 0; // Pascal glyph origin is handled in DrawShadowTextUtf8 (+10)
         DrawRectangle(x - 8, y - 18, 300, (max + 1) * 22 + 26, 0x000000CC, 0xFFFFFFFF, 200);
         std::string title = " ——選擇隊友——";
         DrawShadowTextUtf8(title, 337 + textOffsetX, 36, 0x21FFFFFF, 0x23FFFFFF);
@@ -2022,8 +2103,9 @@ constexpr int kSysMenuRowStep = 84;
 constexpr int kSysSubMenuY0 = 48;
 }
 
-void UIManager::SelectShowSystem() {
+bool UIManager::SelectShowSystem() {
     bool running = true;
+    bool loadedGame = false;
     int currentSelection = 0;
     int subMenu = -1;
     int subSelection = 0;
@@ -2033,7 +2115,7 @@ void UIManager::SelectShowSystem() {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
                 GameManager::getInstance().Quit();
-                return;
+                return false;
             }
             if (event.type == SDL_EVENT_KEY_DOWN) {
                 if (event.key.key == SDLK_ESCAPE) {
@@ -2076,9 +2158,10 @@ void UIManager::SelectShowSystem() {
                         } else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_KP_4) {
                             subSelection = (subSelection + maxSlot - 1) % maxSlot;
                         } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
-                            int slot = (subSelection == 5) ? 6 : (subSelection + 1);
-                            bool loaded = GameManager::getInstance().LoadGame(slot);
-                            if (loaded) {
+                            int slot = (subSelection == 5) ? GameManager::AUTOSAVE_SLOT : (subSelection + 1);
+                            if (GameManager::getInstance().LoadGame(slot)) {
+                                GameManager::getInstance().ResumeAfterLoad();
+                                loadedGame = true;
                                 running = false;
                             } else {
                                 ShowDialogue("讀取失敗", 0, 0);
@@ -2113,7 +2196,7 @@ void UIManager::SelectShowSystem() {
                         } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
                             if (subSelection == 1) {
                                 GameManager::getInstance().Quit();
-                                return;
+                                return false;
                             } else {
                                 subMenu = -1;
                             }
@@ -2168,9 +2251,10 @@ void UIManager::SelectShowSystem() {
                         int startY = kSysSubMenuY0 + kSysMenuRowStep * subMenu;
                         if (ym >= startY && ym < startY + 25 && xm >= startX) {
                             if (subMenu == 0) {
-                                int slot = (subSelection == 5) ? 6 : (subSelection + 1);
-                                bool loaded = GameManager::getInstance().LoadGame(slot);
-                                if (loaded) {
+                                int slot = (subSelection == 5) ? GameManager::AUTOSAVE_SLOT : (subSelection + 1);
+                                if (GameManager::getInstance().LoadGame(slot)) {
+                                    GameManager::getInstance().ResumeAfterLoad();
+                                    loadedGame = true;
                                     running = false;
                                 }
                             } else if (subMenu == 1) {
@@ -2182,7 +2266,7 @@ void UIManager::SelectShowSystem() {
                             } else if (subMenu == 4) {
                                 if (subSelection == 1) {
                                     GameManager::getInstance().Quit();
-                                    return;
+                                    return false;
                                 } else {
                                     subMenu = -1;
                                 }
@@ -2227,6 +2311,7 @@ void UIManager::SelectShowSystem() {
         VirtualControls::present(m_renderer);
         SDL_Delay(16);
     }
+    return loadedGame;
 }
 
 void UIManager::ShowSystem(int selectedIndex, int subMenu, int subSelection) {
@@ -2454,7 +2539,7 @@ void UIManager::ShowSkill(int petId, int selectedIndex) {
     int petCount = hero.getPetAmount();
     if (petCount < 0) petCount = 0;
     if (petCount > 5) petCount = 5;
-    int textOffsetX = 8;
+    int textOffsetX = 0; // Pascal glyph origin is handled in DrawShadowTextUtf8 (+10)
     if (petCount == 0) {
         DrawShadowTextUtf8(" ————目前尚無寵物————", 120 + textOffsetX, 50, 0xFFFFFFFF, 0x000000FF);
         return;
@@ -2502,9 +2587,10 @@ void UIManager::ShowSkill(int petId, int selectedIndex) {
     for (int i = 0; i < petCount; ++i) {
         Role& r = GameManager::getInstance().getRole(i + 1);
         std::string name = TextManager::getInstance().gbkToUtf8(r.getName());
-        uint32_t c1 = (i == petId) ? 0xFFFF00FF : 0xFFFFFFFF;
-        uint32_t c2 = (i == petId) ? 0x000000FF : 0x000000FF;
-        DrawShadowTextUtf8(name, 8 + textOffsetX, 20 + 23 * i, c1, c2);
+        uint32_t c1 = (i == petId) ? 0x64FFFFFF : 0x05FFFFFF;
+        uint32_t c2 = (i == petId) ? 0x66FFFFFF : 0x07FFFFFF;
+        // Pascal ShowSkillMenu: drawtext(..., 5, 20 + 23 * i, ...)
+        DrawShadowTextUtf8(name, 5, 20 + 23 * i, c1, c2);
     }
 
     DrawHead(pet.getHeadNum(), 140, 90);
@@ -2547,7 +2633,53 @@ void UIManager::SelectShowTeammate() {
     int tMenu = 1;
     int rMenu = 0;
     int position = 0;
+    int pending = -1;
+    int pendingTeamSlot = -1;
+    int pendingReserveSlot = -1;
+    std::vector<int> reserveList = BuildReserveRoleList();
     SDL_Event event;
+
+    auto redraw = [&]() {
+        SDL_RenderClear(m_renderer);
+        if (m_texMenuBackground) {
+            SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
+        }
+        const int drawPosition = (position < 0) ? 0 : position;
+        ShowTeammate(tMenu, rMenu, drawPosition, reserveList, pending >= 0, pendingTeamSlot, pendingReserveSlot);
+        VirtualControls::present(m_renderer);
+    };
+
+    auto confirmSelection = [&]() {
+        if (pending < 0) {
+            if (position == 0) {
+                pending = tMenu;
+                pendingTeamSlot = tMenu;
+            } else {
+                pending = rMenu;
+                pendingReserveSlot = rMenu;
+            }
+        } else {
+            if (pendingTeamSlot >= 0 && pendingReserveSlot < 0 && position == 0 && tMenu != pendingTeamSlot) {
+                SwapTeamSlots(pendingTeamSlot, tMenu);
+            } else {
+                int tt = pendingTeamSlot;
+                int rr = pendingReserveSlot;
+                if (rr < 0) rr = rMenu;
+                if (tt < 0) tt = tMenu;
+                PerformTeammateSwap(tt, rr, reserveList);
+            }
+            pending = -1;
+            pendingTeamSlot = -1;
+            pendingReserveSlot = -1;
+        }
+        position = 1 - position;
+    };
+
+    auto cancelPending = [&]() {
+        pending = -1;
+        pendingTeamSlot = -1;
+        pendingReserveSlot = -1;
+    };
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -2555,58 +2687,159 @@ void UIManager::SelectShowTeammate() {
                 GameManager::getInstance().Quit();
                 return;
             }
-            if (event.type == SDL_EVENT_KEY_DOWN) {
-                if (event.key.key == SDLK_ESCAPE) {
-                    running = false;
+
+            if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                float fx = 0.f, fy = 0.f;
+                SDL_GetMouseState(&fx, &fy);
+                int xm = static_cast<int>(fx);
+                int ym = static_cast<int>(fy);
+                int oldT = tMenu;
+                int oldR = rMenu;
+                int oldPos = position;
+                int newPos = -1;
+                if (xm > 120 && ym > 60 && xm < 340 && ym < 60 + 25 * 5) {
+                    newPos = 0;
+                    tMenu = (ym - 60) / 25 + 1;
+                    if (tMenu < 1) tMenu = 1;
+                    if (tMenu > 5) tMenu = 5;
+                } else if (xm > 350 && ym > 60 && xm < 550 && ym < 60 + 25 * 13) {
+                    newPos = 1;
+                    rMenu = ((ym - 60) / 25) * 2 + (xm - 350) / 100;
+                    if (rMenu > 25) rMenu = 25;
+                    if (rMenu < 0) rMenu = 0;
                 }
-                // Basic navigation
-                if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
-                    if (position == 0) { tMenu = (tMenu % 5) + 1; }
-                    else { rMenu = (rMenu + 2) % 26; }
-                } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
-                    if (position == 0) { tMenu = (tMenu == 1) ? 5 : tMenu - 1; }
-                    else { rMenu = (rMenu == 0) ? 24 : rMenu - 2; }
-                } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_KP_6) {
-                    position = 1;
-                } else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_KP_4) {
-                    position = 0;
+                if (newPos >= 0) position = newPos;
+                if (oldT != tMenu || oldR != rMenu || oldPos != position) redraw();
+                continue;
+            }
+
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    if (pending < 0) running = false;
+                    else { cancelPending(); redraw(); }
+                    continue;
                 }
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    confirmSelection();
+                    redraw();
+                }
+                continue;
+            }
+
+            if (event.type != SDL_EVENT_KEY_DOWN) continue;
+
+            if (event.key.key == SDLK_ESCAPE) {
+                if (pending < 0) running = false;
+                else cancelPending();
+                continue;
+            }
+            if (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER || event.key.key == SDLK_SPACE) {
+                confirmSelection();
+                continue;
+            }
+            if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
+                if (position == 0) tMenu = (tMenu >= 5) ? 1 : tMenu + 1;
+                else rMenu = (rMenu + 2) % 26;
+            } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
+                if (position == 0) tMenu = (tMenu <= 1) ? 5 : tMenu - 1;
+                else rMenu = (rMenu < 2) ? 24 : rMenu - 2;
+            } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_KP_6) {
+                if (position == 0) {
+                    if (pending < 0) position = 1;
+                } else {
+                    rMenu = (rMenu + 1) % 26;
+                }
+            } else if (event.key.key == SDLK_LEFT || event.key.key == SDLK_KP_4) {
+                if (position == 1) {
+                    if ((rMenu % 2) == 0 && pending < 0) position = 0;
+                    else if (pending >= 0) position = 0;
+                    else rMenu = (rMenu <= 0) ? 25 : rMenu - 1;
+                } else {
+                    rMenu = (rMenu <= 0) ? 25 : rMenu - 1;
+                }
+            } else {
+                continue;
             }
         }
 
-        SDL_RenderClear(m_renderer);
-        if (m_texMenuBackground) {
-            SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
-        }
-        ShowTeammate(tMenu, rMenu, position);
-        VirtualControls::present(m_renderer);
+        redraw();
         SDL_Delay(16);
     }
+
+    CompactTeamList();
 }
 
-void UIManager::ShowTeammate(int tMenu, int rMenu, int position) {
+void UIManager::ShowTeammate(int tMenu, int rMenu, int position, const std::vector<int>& reserveList, bool pendingSwap, int pendingTeamSlot, int pendingReserveSlot) {
     if (!m_texTeammate) LoadSystemGraphics();
     if (m_texTeammate) {
         SDL_RenderTexture(m_renderer, m_texTeammate, NULL, NULL);
     }
 
-    int x1 = 120;
-    int x2 = 350;
-    int y1 = 35;
-    int y2 = 35;
+    const int x1 = 120;
+    const int x2 = 350;
+    const int y1 = 35;
+    const int y2 = 35;
+    const uint32_t normalColor = 0x05FFFFFF;
+    const uint32_t normalShadow = 0x07FFFFFF;
+    const int drawPos = pendingSwap ? 2 : position;
 
     DrawRectangle(x1 + 15, y1 - 5, 220, 160, 0, 0xFFFFFFFF, 40);
-    DrawShadowTextUtf8(" 隊中人員", x1, y1, 0xFFFFFFFF, 0x000000FF);
-    
-    DrawRectangle(x2 + 15, y2 - 5, 240, 376, 0, 0xFFFFFFFF, 40);
-    DrawShadowTextUtf8(" 預備人員", x2, y2, 0xFFFFFFFF, 0x000000FF);
+    DrawShadowTextUtf8(" 隊中人員", x1, y1, PaletteIndexToColor(255), PaletteIndexToColor(111));
 
-    const auto& team = GameManager::getInstance().getTeamList();
-    for (size_t i = 0; i < team.size() && i < 6; ++i) {
-        Role& r = GameManager::getInstance().getRole(team[i]);
-        uint32_t color = (position == 0 && (int)i == tMenu - 1) ? 0xFFFFFFFF : 0xAAAAAAFF;
-        std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(r.getName());
-        DrawShadowTextUtf8(nameUtf8, x1 + 20, y1 + 30 + i * 25, color, 0x000000FF);
+    DrawRectangle(x2 + 15, y2 - 5, 240, 376, 0, 0xFFFFFFFF, 40);
+    DrawShadowTextUtf8(" 預備人員", x2, y2, PaletteIndexToColor(255), PaletteIndexToColor(111));
+
+    DrawRectangle(x1 + 15, y1 - 5 + 165, 220, 104, 0, 0xFFFFFFFF, 40);
+    DrawRectangle(x1 + 15, y1 - 5 + 165 + 108, 220, 104, 0, 0xFFFFFFFF, 40);
+
+    auto& game = GameManager::getInstance();
+
+    for (int i = 1; i <= 5; ++i) {
+        int roleId = game.getTeamMember(i);
+        if (roleId >= 0) {
+            std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(game.getRole(roleId).getName());
+            DrawShadowTextUtf8(nameUtf8, x1 + 5, i * 25 + y1, normalColor, normalShadow);
+            DrawShadowTextUtf8(" 等級  ", x1 + 105, i * 25 + y1, normalColor, normalShadow);
+            DrawEngShadowText(FormatPaddedNumber(game.getRole(roleId).getLevel(), 2), x1 + 175, i * 25 + y1, normalColor, normalShadow);
+        }
+        if ((drawPos == 0 || drawPos == 2) && game.getTeamMember(tMenu) >= 0 && i == tMenu) {
+            int previewId = game.getTeamMember(i);
+            std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(game.getRole(previewId).getName());
+            DrawShadowTextUtf8(nameUtf8, x1 + 5, y1 + 170 - 5, normalColor, normalShadow);
+            DrawHpMpStatus(previewId, x1 + 5, y1 + 170);
+            DrawShadowTextUtf8(" 等級  ", x1 + 105, y1 + 170 - 5, normalColor, normalShadow);
+            DrawEngShadowText(FormatPaddedNumber(game.getRole(previewId).getLevel(), 2), x1 + 175, y1 + 170 - 5, normalColor, normalShadow);
+        }
+    }
+
+    for (int i = 0; i < 26; ++i) {
+        int roleId = (i < (int)reserveList.size()) ? reserveList[i] : -1;
+        if (roleId >= 0) {
+            std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(game.getRole(roleId).getName());
+            DrawShadowTextUtf8(nameUtf8, x2 + (i % 2) * 100 + 5, ((i / 2) + 1) * 25 + y2, normalColor, normalShadow);
+        }
+        if ((drawPos == 1 || drawPos == 2) && roleId >= 0 && i == rMenu) {
+            std::string nameUtf8 = TextManager::getInstance().gbkToUtf8(game.getRole(roleId).getName());
+            DrawShadowTextUtf8(nameUtf8, x1 + 5, y1 + 170 - 5 + 110, normalColor, normalShadow);
+            DrawHpMpStatus(roleId, x1 + 5, y1 + 170 + 110);
+            DrawShadowTextUtf8(" 等級  ", x1 + 105, y1 + 170 - 5 + 110, normalColor, normalShadow);
+            DrawEngShadowText(FormatPaddedNumber(game.getRole(roleId).getLevel(), 2), x1 + 105 + 70, y1 + 170 - 5 + 110, normalColor, normalShadow);
+        }
+    }
+
+    if (drawPos == 0 || drawPos == 2) {
+        DrawRectangle(x1 + 20, y1 + tMenu * 25, 210, 25, 0, 0xFFFFFFFF, 0);
+    }
+    if (drawPos == 1 || drawPos == 2) {
+        DrawRectangle(x2 + 20 + 100 * (rMenu % 2), y2 + (1 + (rMenu / 2)) * 25, 100, 25, 0, 0xFFFFFFFF, 0);
+    }
+
+    // Pending first-pick marker (gray frame on source slot)
+    if (pendingTeamSlot >= 1 && pendingTeamSlot <= 5) {
+        DrawRectangle(x1 + 20, y1 + pendingTeamSlot * 25, 210, 25, 0, 0x888888FF, 30);
+    }
+    if (pendingReserveSlot >= 0 && pendingReserveSlot <= 25) {
+        DrawRectangle(x2 + 20 + 100 * (pendingReserveSlot % 2), y2 + (1 + (pendingReserveSlot / 2)) * 25, 100, 25, 0, 0x888888FF, 30);
     }
 }
 
@@ -2859,10 +3092,11 @@ void UIManager::ShowItem(int menuSelection, int selectedIndex, bool inSubmenu) {
     int x = 15, y = 15;
     DrawRectangle(x, y, 90, 6 * 22 + 28, 0, 0xFFFFFFFF, 30);
 
-    int listTextOffsetX = -4;
     for (int i = 0; i < 6; ++i) {
-        uint32_t color = (i == menuSelection) ? 0xFFFFFFFF : 0xAAAAAAFF;
-        DrawShadowTextUtf8(labels[i], x + 5 + listTextOffsetX, y + 5 + 22 * i, color, 0x000000FF);
+        uint32_t color1 = (i == menuSelection) ? 0x64FFFFFF : 0x05FFFFFF;
+        uint32_t color2 = (i == menuSelection) ? 0x66FFFFFF : 0x07FFFFFF;
+        // Pascal CommonMenu style: text at x-17
+        DrawShadowTextUtf8(labels[i], x - 17, y + 2 + 22 * i, color1, color2);
     }
 
     const int infoX = 122;
@@ -3399,9 +3633,10 @@ bool UIManager::ShowSaveLoadMenu(bool isSave) {
             ShowDialogue("進度已保存", 0, 0);
             running = false;
         } else {
-            int slot = (currentSelection == 5) ? 6 : (currentSelection + 1);
+            int slot = (currentSelection == 5) ? GameManager::AUTOSAVE_SLOT : (currentSelection + 1);
             loaded = GameManager::getInstance().LoadGame(slot);
             if (loaded) {
+                GameManager::getInstance().ResumeAfterLoad();
                 running = false;
             } else {
                 ShowDialogue("讀取失敗", 0, 0);
@@ -3602,7 +3837,7 @@ void UIManager::ShowDialogue(const std::string& text, int headId, int mode, cons
 
     InputManager::getInstance().FlushEvents();
     const uint32_t openTime = SDL_GetTicks();
-    const uint32_t debounceMs = 150;
+    const uint32_t debounceMs = 280;
 
     auto bytesToHex = [](const std::string& s, size_t maxBytes) -> std::string {
         static const char* kHex = "0123456789ABCDEF";
@@ -4337,23 +4572,32 @@ void UIManager::ShowItemNotification(int itemId, int amount) {
 }
 
 void UIManager::FadeScreen(bool fadeIn) {
-    // fadeIn: Black -> Transparent
-    // !fadeIn: Transparent -> Black
+    // Pascal instruct_13/14: blend black into screen surface (not renderer overlay).
+    SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
+    if (!screen) return;
 
-    int steps = 20;
-    SDL_FRect full = logicalFullscreenRect();
-    for (int i = 0; i <= steps; ++i) {
-        int alpha = fadeIn ? (255 - i * 255 / steps) : (i * 255 / steps);
-        
-        GameManager::getInstance().RenderScreenTo(m_renderer);
-        
-        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, alpha);
-        SDL_RenderFillRect(m_renderer, &full);
-        
-        VirtualControls::present(m_renderer);
-        SDL_Delay(20);
+    if (fadeIn) {
+        for (int i = 0; i <= 5; ++i) {
+            GameManager::getInstance().DrawRoamingSceneToSurface();
+            GraphicsUtils::BlendRectangleOnSurface(screen, 0, 0, screen->w - 1, screen->h - 1,
+                                                   0, 0, 0, 0, 100 - i * 20);
+            GameManager::getInstance().RenderScreenTo(m_renderer);
+            VirtualControls::present(m_renderer);
+            SDL_Delay(5);
+        }
+    } else {
+        for (int i = 0; i <= 10; ++i) {
+            GraphicsUtils::BlendRectangleOnSurface(screen, 0, 0, screen->w - 1, screen->h - 1,
+                                                   0, 0, 0, 0, i * 10);
+            GameManager::getInstance().RenderScreenTo(m_renderer);
+            VirtualControls::present(m_renderer);
+            int delay = std::max(1, (10 * GameManager::getInstance().getGameSpeed()) / 10);
+            SDL_Delay(delay);
+        }
     }
+
+    GraphicsUtils::EnsureSurfaceOpaque(screen);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
 }
 
 void UIManager::FlashScreen(uint32_t color, int durationMs) {
@@ -4379,6 +4623,8 @@ void UIManager::UpdateScreen() {
 }
 
 void UIManager::ShowShop(int shopId) {
+    if (shopId < 0) shopId = 0;
+    GameManager::getInstance().RedrawRoamingScene();
     CaptureScreen();
     int selection = 0;
     int mode = 0; // 0 buy, 1 sell
@@ -4386,29 +4632,30 @@ void UIManager::ShowShop(int shopId) {
     SDL_Event event;
 
     struct ShopEntry { int itemId; int price; };
+    auto canShowItem = [](const Item& item, bool showHidden) -> bool {
+        if (item.getInventory() > 0 && !showHidden) return false;
+        return true;
+    };
     auto buildBuyStock = [&]() -> std::vector<ShopEntry> {
         std::vector<ShopEntry> stock;
+        const bool showHidden = BattleManager::getInstance().GetPetSkill(2, 4);
+        auto tryAdd = [&](int itemId, int price) {
+            if (itemId <= 0 || itemId >= GameManager::getInstance().getItemCount()) return;
+            Item& item = GameManager::getInstance().getItem(itemId);
+            if (item.getName().empty()) return;
+            if (!canShowItem(item, showHidden)) return;
+            if (price < 0) price = item.getPrice();
+            if (price < 0) price = 0;
+            stock.push_back({itemId, price});
+        };
+
         for (int i = 0; i < 20; ++i) {
-            int itemId = GameManager::getInstance().getX50(0x5000 + shopId * 20 + i);
-            int price = GameManager::getInstance().getX50(0x5100 + shopId * 20 + i);
-            if (itemId > 0 && price >= 0) stock.push_back({itemId, price});
+            tryAdd(GameManager::getInstance().getX50(0x5000 + shopId * 20 + i),
+                   GameManager::getInstance().getX50(0x5100 + shopId * 20 + i));
         }
         if (stock.empty() && shopId >= 0 && shopId < GameManager::getInstance().getShopCount()) {
             for (int i = 0; i < 18; ++i) {
-                int itemId = GameManager::getInstance().getShopData(shopId, i);
-                if (itemId <= 0 || itemId >= GameManager::getInstance().getItemCount()) continue;
-                Item& item = GameManager::getInstance().getItem(itemId);
-                if (item.getName().empty()) continue;
-                int price = item.getPrice();
-                if (price < 0) price = 0;
-                stock.push_back({itemId, price});
-            }
-        }
-        if (stock.empty()) {
-            for (int itemId = 1; itemId <= 10 && itemId < GameManager::getInstance().getItemCount(); ++itemId) {
-                Item& item = GameManager::getInstance().getItem(itemId);
-                if (!item.getName().empty() && item.getPrice() > 0)
-                    stock.push_back({itemId, item.getPrice()});
+                tryAdd(GameManager::getInstance().getShopData(shopId, i), -1);
             }
         }
         return stock;
@@ -4466,13 +4713,13 @@ void UIManager::ShowShop(int shopId) {
             }
         }
 
-        SDL_RenderClear(m_renderer);
+        GameManager::getInstance().RedrawRoamingScene();
         if (m_texMenuBackground) SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
         DrawRectangle(80, 60, 480, 320, 0, 0xFFFFFFFF, 40);
-        DrawShadowTextUtf8(mode == 0 ? " 商店·購入" : " 商店·賣出", 100, 70, 0xFFFF00FF, 0x000000FF);
+        DrawShadowTextUtf8(mode == 0 ? " 商店·購入" : " 商店·賣出", 100, 70, 0x64FFFFFF, 0x66FFFFFF);
         std::string moneyStr = " 銀兩：" + std::to_string(GameManager::getInstance().getItemAmount(0));
-        DrawShadowTextUtf8(moneyStr, 380, 70, 0xFFFFFFFF, 0x000000FF);
-        DrawShadowTextUtf8(" Tab/←→ 切換買/賣", 100, 95, 0xAAAAAAFF, 0x000000FF);
+        DrawShadowTextUtf8(moneyStr, 380, 70, 0x05FFFFFF, 0x07FFFFFF);
+        DrawShadowTextUtf8(" Tab/←→ 切換買/賣", 100, 95, 0x21FFFFFF, 0x23FFFFFF);
 
         size_t shown = std::min(stock.size(), (size_t)10);
         for (size_t i = 0; i < shown; ++i) {
@@ -4480,13 +4727,14 @@ void UIManager::ShowShop(int shopId) {
             std::string line = TextManager::getInstance().gbkToUtf8(item.getName()) +
                 "  $" + std::to_string(stock[i].price);
             if (mode == 1) line += " x" + std::to_string(GameManager::getInstance().getItemAmount(stock[i].itemId));
-            uint32_t color = ((int)i == selection) ? 0xFFFF00FF : 0xFFFFFFFF;
-            DrawShadowTextUtf8(line, 100, 120 + (int)i * 22, color, 0x000000FF);
+            uint32_t color = ((int)i == selection) ? 0x64FFFFFF : 0x05FFFFFF;
+            uint32_t shadow = ((int)i == selection) ? 0x66FFFFFF : 0x07FFFFFF;
+            DrawShadowTextUtf8(line, 100, 120 + (int)i * 22, color, shadow);
         }
         if (stock.empty()) {
-            DrawShadowTextUtf8(mode == 0 ? " （此商店暫無商品）" : " （背包無可賣物品）", 100, 120, 0xFFFFFFFF, 0x000000FF);
+            DrawShadowTextUtf8(mode == 0 ? " （此商店暫無商品）" : " （背包無可賣物品）", 100, 120, 0x05FFFFFF, 0x07FFFFFF);
         }
-        DrawShadowTextUtf8(" 空格/回車確認  ESC離開", 100, 350, 0xAAAAAAFF, 0x000000FF);
+        DrawShadowTextUtf8(" 空格/回車確認  ESC離開", 100, 350, 0x21FFFFFF, 0x23FFFFFF);
         VirtualControls::present(m_renderer);
         SDL_Delay(16);
     }
@@ -4537,4 +4785,216 @@ bool UIManager::RunMiniGame(const std::string& titleUtf8, const std::string& hin
     }
     ShowDialogue(success ? " 挑戰成功！" : " 挑戰失敗…", -1, 0);
     return success;
+}
+
+int UIManager::InputAmount() {
+    int amount = 0;
+    SDL_Event event;
+    InputManager::getInstance().FlushEvents();
+    auto redraw = [&]() {
+        CaptureScreen();
+        if (m_texMenuBackground) SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
+        DrawRectangle(220, 225, 200, 30, 0, GraphicsUtils::getPaletteColor(255), 100);
+        DrawShadowTextUtf8("輸入數字", 220, 230, GraphicsUtils::getPaletteColor(5), GraphicsUtils::getPaletteColor(7));
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%5d", amount);
+        DrawEngShadowText(buf, 261, 230, GraphicsUtils::getPaletteColor(7), GraphicsUtils::getPaletteColor(5));
+        VirtualControls::present(m_renderer);
+    };
+    redraw();
+    while (SDL_WaitEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) {
+            GameManager::getInstance().Quit();
+            return amount;
+        }
+        if (event.type == SDL_EVENT_KEY_UP) {
+            SDL_Keycode key = event.key.key;
+            if (key == SDLK_UP || key == SDLK_KP_8) amount += 10;
+            else if (key == SDLK_DOWN || key == SDLK_KP_2) amount -= 10;
+            else if (key == SDLK_LEFT || key == SDLK_KP_4) amount -= 1;
+            else if (key == SDLK_RIGHT || key == SDLK_KP_6) amount += 1;
+            else if ((key >= SDLK_0 && key <= SDLK_9) && amount < 3276) {
+                amount = amount * 10 + static_cast<int>(key - SDLK_0);
+            } else if (key == SDLK_BACKSPACE) amount /= 10;
+            else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) return amount;
+            if (amount > 32767) amount = 32767;
+            if (amount < 0) amount = 0;
+            redraw();
+        }
+    }
+    return amount;
+}
+
+std::string UIManager::ShowInputBox(const std::string& titleUtf8, const std::string& defaultUtf8) {
+    std::string text = defaultUtf8;
+    SDL_Event event;
+    InputManager::getInstance().FlushEvents();
+    auto redraw = [&]() {
+        CaptureScreen();
+        if (m_texMenuBackground) SDL_RenderTexture(m_renderer, m_texMenuBackground, NULL, NULL);
+        DrawRectangle(180, 200, 280, 80, 0, GraphicsUtils::getPaletteColor(255), 120);
+        DrawShadowTextUtf8(titleUtf8, 190, 205, GraphicsUtils::getPaletteColor(5), GraphicsUtils::getPaletteColor(7));
+        DrawShadowTextUtf8(text + "_", 190, 235, 0xFFFFFFFF, 0x000000FF);
+        DrawShadowTextUtf8("Enter確認 Esc取消", 190, 260, 0xAAAAAAFF, 0x000000FF);
+        VirtualControls::present(m_renderer);
+    };
+    redraw();
+    while (SDL_WaitEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) return defaultUtf8;
+        if (event.type == SDL_EVENT_KEY_UP) {
+            SDL_Keycode key = event.key.key;
+            if (key == SDLK_ESCAPE) return defaultUtf8;
+            if (key == SDLK_RETURN || key == SDLK_KP_ENTER) return text;
+            if (key == SDLK_BACKSPACE && !text.empty()) text.pop_back();
+            else if (key == SDLK_SPACE) text.push_back(' ');
+            redraw();
+        } else if (event.type == SDL_EVENT_TEXT_INPUT) {
+            text += event.text.text;
+            if (text.size() > 20) text.resize(20);
+            redraw();
+        }
+    }
+    return defaultUtf8;
+}
+
+void UIManager::CheckHotkey(SDL_Keycode key) {
+    int slot = -1;
+    if (key >= SDLK_1 && key <= SDLK_6) slot = static_cast<int>(key - SDLK_1);
+    if (slot < 0 || slot > 5) return;
+    switch (slot) {
+        case 0: SelectShowStatus(); break;
+        case 1: SelectShowMagic(); break;
+        case 2: SelectShowItem(); break;
+        case 3: SelectShowTeammate(); break;
+        case 4: FourPets(); break;
+        case 5: SelectShowSystem(); break;
+    }
+    GameManager::getInstance().RenderScreenTo(m_renderer);
+    UpdateScreen();
+}
+
+void UIManager::ShowMap() {
+    struct MapPoint { int sceneId; int x; int y; std::string nameUtf8; std::string coordUtf8; };
+    std::vector<MapPoint> points;
+    int maxSpd = 0;
+    for (int i = 0; i < GameManager::getInstance().getRoleCount(); ++i) {
+        Role& r = GameManager::getInstance().getRole(i);
+        int ts = r.getTeamState();
+        if (ts == 1 || ts == 2) maxSpd = std::max(maxSpd, static_cast<int>(r.getSpeed()));
+    }
+    int sceneCount = SceneManager::getInstance().GetSceneCount();
+    for (int i = 0; i < sceneCount; ++i) {
+        Scene* sc = SceneManager::getInstance().GetScene(i);
+        if (!sc) continue;
+        int y1 = sc->getMainEntranceY1(), x1 = sc->getMainEntranceX1();
+        int y2 = sc->getMainEntranceY2(), x2 = sc->getMainEntranceX2();
+        int cond = sc->getEnCondition();
+        if ((y1 == 0 && x1 == 0 && x2 == 0 && y2 == 0) ||
+            (cond == 2 && maxSpd < 70) || cond == 1 || cond == 3 || cond == 4) continue;
+        MapPoint p;
+        p.sceneId = i;
+        p.y = y1; p.x = x1;
+        p.nameUtf8 = TextManager::getInstance().gbkToUtf8(sc->getName());
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%3d, %3d", y1, x1);
+        p.coordUtf8 = buf;
+        points.push_back(p);
+    }
+  int hover = 0;
+    SDL_Event event;
+    while (true) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) { GameManager::getInstance().Quit(); return; }
+            if (event.type == SDL_EVENT_KEY_UP && event.key.key == SDLK_ESCAPE) return;
+            if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                float mx = event.motion.x, my = event.motion.y;
+                for (size_t i = 0; i < points.size(); ++i) {
+                    int px = 313 + ((points[i].y - points[i].x) * 5) / 8;
+                    int py = 63 + ((points[i].y + points[i].x) * 5) / 16;
+                    if (mx >= px && mx < px + 15 && my >= py && my < py + 15) hover = static_cast<int>(i);
+                }
+            }
+        }
+        CaptureScreen();
+        DrawRectangle(0, 30, 640, 380, 0x101820FF, GraphicsUtils::getPaletteColor(255), 200);
+        DrawShadowTextUtf8(" 世界地圖 (ESC離開)", 20, 40, GraphicsUtils::getPaletteColor(21), GraphicsUtils::getPaletteColor(25));
+        for (size_t i = 0; i < points.size(); ++i) {
+            int px = 313 + ((points[i].y - points[i].x) * 5) / 8;
+            int py = 63 + ((points[i].y + points[i].x) * 5) / 16;
+            uint32_t c = (static_cast<int>(i) == hover) ? 0xFFFF00FF : 0xFF4444FF;
+            DrawFilledRect(px, py, 8, 8, c, 255);
+        }
+        if (!points.empty() && hover >= 0 && hover < (int)points.size()) {
+            DrawShadowTextUtf8(points[hover].nameUtf8, 17, 80, GraphicsUtils::getPaletteColor(21), GraphicsUtils::getPaletteColor(25));
+            DrawEngShadowText(points[hover].coordUtf8, 37, 100, GraphicsUtils::getPaletteColor(255), GraphicsUtils::getPaletteColor(254));
+        }
+        int mapX = 0, mapY = 0;
+        GameManager::getInstance().getMainMapPosition(mapX, mapY);
+        char pos[32]; std::snprintf(pos, sizeof(pos), "%3d, %3d", mapY, mapX);
+        DrawShadowTextUtf8(" 你的位置", 17, 275, GraphicsUtils::getPaletteColor(21), GraphicsUtils::getPaletteColor(25));
+        DrawEngShadowText(pos, 37, 295, GraphicsUtils::getPaletteColor(255), GraphicsUtils::getPaletteColor(254));
+        int sx = GameManager::getInstance().getShipX();
+        int sy = GameManager::getInstance().getShipY();
+        char ship[32]; std::snprintf(ship, sizeof(ship), "%3d, %3d", sy, sx);
+        DrawShadowTextUtf8(" 船的位置", 17, 325, GraphicsUtils::getPaletteColor(21), GraphicsUtils::getPaletteColor(25));
+        DrawEngShadowText(ship, 37, 345, GraphicsUtils::getPaletteColor(255), GraphicsUtils::getPaletteColor(254));
+        VirtualControls::present(m_renderer);
+        SDL_Delay(33);
+    }
+}
+
+bool UIManager::PetStatus(int petIndex, int menu) {
+    (void)menu;
+    Role& hero = GameManager::getInstance().getRole(0);
+    if (petIndex < 1 || petIndex > hero.getPetAmount()) return false;
+    ShowDialogue(" 寵物狀態（簡化）", -1, 0);
+    return true;
+}
+
+void UIManager::FourPets() {
+    Role& hero = GameManager::getInstance().getRole(0);
+    if (hero.getPetAmount() <= 0) {
+        ShowDialogue(" 尚無寵物", -1, 0);
+        return;
+    }
+    int r = 0;
+    SDL_Event event;
+    auto redraw = [&]() {
+        CaptureScreen();
+        DrawRectangle(10, 20, 80, hero.getPetAmount() * 23 + 10, 0, 0xFFFFFFFF, 180);
+        for (int i = 0; i < hero.getPetAmount(); ++i) {
+            std::string line = " 寵物" + std::to_string(i + 1);
+            uint32_t c1 = (i == r) ? 0xFFFF00FF : 0xFFFFFFFF;
+            DrawShadowTextUtf8(line, 15, 25 + i * 23, c1, 0x000000FF);
+        }
+        VirtualControls::present(m_renderer);
+    };
+    redraw();
+    while (SDL_WaitEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) return;
+        if (event.type == SDL_EVENT_KEY_DOWN) {
+            if (event.key.key == SDLK_DOWN || event.key.key == SDLK_KP_2) {
+                r = (r + 1) % hero.getPetAmount();
+                redraw();
+            } else if (event.key.key == SDLK_UP || event.key.key == SDLK_KP_8) {
+                r = (r - 1 + hero.getPetAmount()) % hero.getPetAmount();
+                redraw();
+            }
+        } else if (event.type == SDL_EVENT_KEY_UP) {
+            if (event.key.key == SDLK_ESCAPE) return;
+            if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE) {
+                if (!PetStatus(r + 1, 0)) return;
+            }
+        }
+    }
+}
+
+bool UIManager::MenuDifficult() {
+    std::vector<std::string> items = {
+        "   極易", "   容易", "   中易", "   中難", "   困難", "   極難"
+    };
+    int menu = CommonMenu(275, 300, 90, items);
+    if (menu < 0) return false;
+    GameManager::getInstance().getRole(0).setDifficulty(menu * 20);
+    return true;
 }

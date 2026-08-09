@@ -1,6 +1,6 @@
 # 金庸群侠前传 C++ 重构：Pascal 对齐进度清单
 
-**更新日期:** 2026-07-21  
+**更新日期:** 2026-08-09  
 **对齐原则:** 以 `kys_*.pas` 玩法级函数为单元；C++ 实现主要在 `cpp_reborn/src/`。状态以**源码实测**为准。  
 **Pascal 真源映射:** [PASCAL_MAPPING.md](PASCAL_MAPPING.md)  
 **待办与分阶段计划:** [../TODO_LIST.md](../TODO_LIST.md)

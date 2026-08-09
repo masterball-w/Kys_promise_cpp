@@ -33,5 +33,9 @@ private:
     SDL_Surface* CropSurface(SDL_Surface* src, int sx, int sy, int sw, int sh);
     SDL_Surface* RotateSurface90(SDL_Surface* src, int turns);
     std::vector<uint16_t> LoadPoetryChars(int talknum);
-    static std::string Ucs2ToUtf8(uint16_t ch);
+  /// Pascal Poetry stores each character as a GBK pair packed in uint16 (not Unicode).
+    static std::string GbkPackedToUtf8(uint16_t packed);
+    void DrawSmpPicCode(int picCode, int x, int y);
+    bool PollSkipSuccess(SDL_Event& ev);
+    void DrawSkipButton();
 };

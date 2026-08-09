@@ -40,7 +40,11 @@ public:
 
     // Testing Helper
     void AddMockScript(int id, const std::vector<int16_t>& script);
-    
+    /** Run a script buffer in-process (for unit tests). Returns final PC. */
+    int ExecuteScriptBuffer(const std::vector<int16_t>& script);
+    int16_t GetScriptWord(int index) const;
+    void ApplyInstruct50Result(int& pc, int result);
+
     // Debug Helper: Print event script data
     void PrintEventScript(int eventScriptId);
 

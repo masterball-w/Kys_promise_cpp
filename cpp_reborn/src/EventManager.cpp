@@ -21,6 +21,28 @@ namespace {
     // GBK bytes for 金先生
     constexpr char kDefaultHeroNameGbk[] = "\xBD\xF0\xCF\xC8\xC9\xFA";
 
+    int s_executeEventDepth = 0;
+
+    void FinishEventPresentation() {
+        auto& gm = GameManager::getInstance();
+        SDL_SetRenderDrawBlendMode(gm.getRenderer(), SDL_BLENDMODE_NONE);
+        if (gm.getCurrentSceneId() >= 0) {
+            SceneManager::getInstance().InitialScene();
+        }
+        gm.RedrawRoamingScene();
+        UIManager::getInstance().UpdateScreen();
+        InputManager::getInstance().FlushEvents();
+    }
+
+    struct ExecuteEventScope {
+        ExecuteEventScope() { ++s_executeEventDepth; }
+        ~ExecuteEventScope() {
+            if (--s_executeEventDepth == 0) {
+                FinishEventPresentation();
+            }
+        }
+    };
+
     uint16_t ReadU16LE(const std::string& s, size_t offset) {
         if (offset + 1 >= s.size()) return 0;
         return static_cast<uint16_t>(static_cast<uint8_t>(s[offset])) |
@@ -282,6 +304,8 @@ void EventManager::SetExecutionContext(int sceneId, int eventId) {
 }
 
 void EventManager::ExecuteEvent(int eventScriptId) {
+    ExecuteEventScope eventScope;
+
     if (eventScriptId <= 0 || eventScriptId > m_eventIndices.size()) {
         std::cerr << "ExecuteEvent: Invalid ID " << eventScriptId << ". Max ID: " << m_eventIndices.size() << std::endl;
         return;
@@ -328,23 +352,7 @@ void EventManager::ExecuteEvent(int eventScriptId) {
 
         switch (opcode) {
             case 0: 
-                // Instruct 0 is typically Redraw.
-                // Pascal logic: after opcode 0, check the NEXT opcode!
-                // If the next opcode is < 0, terminate the event!
-                Instruct_Redraw(); 
-                // Check if we are at end OR next opcode is negative
-                if (pc >= scriptEnd) {
-                    std::cout << "Event " << eventScriptId << " Ends at Opcode 0 (EOF)." << std::endl;
-                    return;
-                }
-                // Peek next opcode (critical for Pascal compatibility!)
-                if (pc < scriptEnd) {
-                    int16_t nextOp = m_eventScripts[pc];
-                    if (nextOp < 0) {
-                        std::cout << "Event " << eventScriptId << " Ends at Opcode 0 followed by Negative Opcode " << nextOp << "." << std::endl;
-                        return; // 终止事件！这是 Pascal 的逻辑！
-                    }
-                }
+                Instruct_Redraw();
                 break;
             case 1: {
                 int talkId = ReadScriptArg(pc);
@@ -432,6 +440,12 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 std::cout << "[Opcode 6] Next opcode at pc=" << pc << " is " 
                           << (pc < m_eventScripts.size() ? m_eventScripts[pc] : -1) << std::endl;
                 break;
+            }
+            case 7: { // Pascal: break — immediately end current event
+                std::cout << "Event " << eventScriptId << " Ends at Opcode 7 (break)." << std::endl;
+                m_executingSceneId = -1;
+                m_executingEventId = -1;
+                return;
             }
             case 8: Instruct_PlayMusic(ReadScriptArg(pc)); break;
             case 9: {
@@ -764,9 +778,7 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                           << " e3=" << args[3] << " e4=" << args[4] << " e5=" << args[5] << " e6=" << args[6] << std::endl;
                 int result = Instruct_50e(args[0], args[1], args[2], args[3], args[4], args[5], args[6]);
                 std::cout << "[instruct_50] result=" << result << std::endl;
-                if (result != 0) {
-                    pc += result;
-                }
+                ApplyInstruct50Result(pc, result);
                 break;
             }
             case 51: Instruct_51(); break;
@@ -798,6 +810,23 @@ void EventManager::ExecuteEvent(int eventScriptId) {
                 int jump2 = ReadScriptArg(pc);
                 int jump = Instruct_60(snum, enum_, pic, jump1, jump2);
                 pc = argStart + jump + 6;
+                break;
+            }
+            case 61: { // Pascal: i := i + e[i+1]; i := i + 3;
+                int opPos = pc - 1;
+                int offset = ReadScriptArg(pc);
+                int newPc = opPos + offset + 3;
+                if (newPc < scriptStart || newPc > scriptEnd) {
+                    std::cerr << "[Opcode 61] Jump out of bounds: opPos=" << opPos
+                              << " offset=" << offset << " newPc=" << newPc
+                              << " range=[" << scriptStart << "," << scriptEnd << ")" << std::endl;
+                    m_executingSceneId = -1;
+                    m_executingEventId = -1;
+                    return;
+                }
+                std::cout << "[Opcode 61] opPos=" << opPos << " offset=" << offset
+                          << " -> pc=" << newPc << std::endl;
+                pc = newPc;
                 break;
             }
             case 62: {
@@ -1081,6 +1110,7 @@ void EventManager::Instruct_NewTalk0(int headNum, int talkNum, int nameNum, int 
     // Head ID Logic:
     int drawHead = (showHead == 0) ? headNum : -1;
     
+    Instruct_Redraw();
     UIManager::getInstance().ShowDialogue(utf8Text, drawHead, place, utf8Name, showName, color);
 }
 
@@ -1474,8 +1504,10 @@ void EventManager::Instruct_63(int rnum, int sexual) {
 }
 
 void EventManager::Instruct_64() {
-    // Pascal instruct_64 body is empty ("韦小宝的商店" stub). Remake opens shop UI.
-    UIManager::getInstance().ShowShop(0);
+    int shopId = GameManager::getInstance().getX50(0x6000);
+    if (shopId < 0) shopId = 0;
+    UIManager::getInstance().ShowShop(shopId);
+    Instruct_Redraw();
 }
 
 void EventManager::HandleInstruct43Sub(int subFunc, int arg3, int arg4, int arg5, int arg6) {
@@ -1529,8 +1561,76 @@ void EventManager::HandleInstruct43Sub(int subFunc, int arg3, int arg4, int arg5
         int score = mini.FemaleSnake();
         GameManager::getInstance().setX50(arg3, static_cast<int16_t>(score));
         Instruct_Redraw();
+    } else if (subFunc == -26) {
+        std::vector<std::string> items;
+        int maxLen = 0;
+        for (int talkNum = arg3; talkNum < arg3 + arg4; ++talkNum) {
+            int actualTalkId = talkNum - 1;
+            if (actualTalkId < 0 || actualTalkId >= static_cast<int>(m_talkIndices.size())) {
+                items.emplace_back("?");
+                continue;
+            }
+            int offset = m_talkIndices[actualTalkId];
+            int nextOffset = (actualTalkId + 1 < static_cast<int>(m_talkIndices.size()))
+                                 ? m_talkIndices[actualTalkId + 1]
+                                 : static_cast<int>(m_talkData.size());
+            int len = nextOffset - offset;
+            if (len <= 0 || offset + len > static_cast<int>(m_talkData.size())) {
+                items.emplace_back("?");
+                continue;
+            }
+            if (len > 2000) len = 2000;
+            std::string raw;
+            raw.reserve(static_cast<size_t>(len));
+            for (int i = 0; i < len; ++i) {
+                uint8_t b = static_cast<uint8_t>(m_talkData[offset + i] ^ 0xFF);
+                if (b == 0xFF || b == 0) break;
+                raw.push_back(static_cast<char>(b));
+            }
+            std::string line = TextManager::getInstance().gbkToUtf8(raw);
+            maxLen = std::max(maxLen, static_cast<int>(line.size()));
+            items.push_back(std::move(line));
+        }
+        if (items.empty()) {
+            GameManager::getInstance().setX50(arg5, 0);
+        } else {
+            SDL_Surface* screen = GameManager::getInstance().getScreenSurface();
+            int menuX = (screen ? screen->w / 2 : 320) - maxLen * 5 - 5;
+            int menuY = 270 - static_cast<int>(items.size()) * 22;
+            int selection = UIManager::getInstance().CommonMenu(menuX, menuY, maxLen * 10 + 10, items);
+            GameManager::getInstance().setX50(arg5, static_cast<int16_t>(std::max(0, selection)));
+        }
+        Instruct_Redraw();
+    } else if (subFunc == -30) {
+        Role& hero = GameManager::getInstance().getRole(0);
+        hero.setAddSkillPoint(static_cast<int16_t>(hero.getAddSkillPoint() + arg3));
+        Instruct_Redraw();
+        UIManager::getInstance().WaitForKeyPress();
+        Instruct_Redraw();
     } else if (subFunc == -31) {
         setMiniResult(mini.Lamp(arg3, arg4, arg5, arg6));
+        Instruct_Redraw();
+    } else if (subFunc == -120) {
+        int sid = arg3;
+        if (sid == -2) sid = GameManager::getInstance().getCurrentSceneId();
+        Scene* sc = SceneManager::getInstance().GetScene(sid);
+        if (sc) {
+            sc->setData(8, static_cast<int16_t>(arg4)); // Pallet
+            int pal = arg4;
+            if (pal < 0 || pal > 3) pal = 0;
+            GraphicsUtils::resetPalette(pal);
+            GraphicsUtils::setScenePalletTint(pal);
+            Instruct_Redraw();
+        }
+    } else if (subFunc == -121) {
+        int sid = arg3;
+        if (sid == -2) sid = GameManager::getInstance().getCurrentSceneId();
+        Scene* sc = SceneManager::getInstance().GetScene(sid);
+        if (sc) {
+            sc->setData(22, static_cast<int16_t>(arg4)); // Mapmode
+            SceneManager::getInstance().SetSceneWeather(arg4);
+        }
+        Instruct_Redraw();
     } else if (subFunc == 540) {
         // Pascal Puzzle: 即时推块，不写 $7000
         Instruct_Puzzle();
@@ -1774,6 +1874,7 @@ void EventManager::Instruct_ModifyEvent(const std::vector<int16_t>& args) {
     // Capture OLD state for change detection
     int oldCondition = sm.GetEventData(sceneId, eventId, 0);
     int oldScriptId = sm.GetEventData(sceneId, eventId, 4);
+    int oldField3 = sm.GetEventData(sceneId, eventId, 3);
 
     // Pascal Logic:
     // list[0]..list[12]
@@ -1922,6 +2023,14 @@ void EventManager::Instruct_ModifyEvent(const std::vector<int16_t>& args) {
              // Queue it instead of executing immediately!
              QueueEvent(newScriptId);
         }
+
+        const int newField3 = sm.GetEventData(sceneId, eventId, 3);
+        if (s_executeEventDepth > 0 && args[5] != -2 && args[5] > 0 && args[5] != oldField3) {
+            std::cout << "[ModEvent] Nested field3 script " << args[5]
+                      << " for event " << eventId
+                      << " (was " << oldField3 << ")" << std::endl;
+            ExecuteEvent(args[5]);
+        }
     }
 }
 
@@ -1932,6 +2041,8 @@ int EventManager::Instruct_Battle(int battleId, int jump1, int jump2, int getExp
     int jumpResult = result ? jump1 : jump2;
     std::cout << "[Instruct_Battle] Battle result: " << (result ? "VICTORY" : "DEFEAT") 
               << " returning jump=" << jumpResult << std::endl;
+    SceneManager::getInstance().InitialScene();
+    Instruct_Redraw();
     return jumpResult;
 }
 
@@ -1944,24 +2055,18 @@ void EventManager::Instruct_JoinParty(int roleId) {
 }
 
 int EventManager::Instruct_AskRest(int jump1, int jump2) {
-    const int w = 640;
-    const int h = 480;
-    const int centerX = w / 2;
-    const int centerY = h / 2;
-    
-    uint32_t color1 = GraphicsUtils::getPaletteColor(5);
-    uint32_t color2 = GraphicsUtils::getPaletteColor(7);
-    uint32_t frameColor = GraphicsUtils::getPaletteColor(255);
-    
-    GameManager::getInstance().RenderScreenTo(UIManager::getInstance().GetRenderer());
-    
-    UIManager::getInstance().DrawRectangle(centerX - 75, centerY - 85, 150, 30, 0, frameColor, 30);
-    UIManager::getInstance().DrawShadowTextUtf8(" 是否需要住宿？", centerX - 70, centerY - 82, color1, color2);
-    
+    const int centerX = 320;
+    const int centerY = 240;
+
+    const std::string title = " 是否需要住宿？";
+    const std::string optYes = " 要求";
+    const std::string optNo = " 取消";
+    const int titleW = 200;
+
     int selection = 0;
     bool running = true;
     SDL_Event event;
-    
+
     while (running) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) {
@@ -1969,10 +2074,9 @@ int EventManager::Instruct_AskRest(int jump1, int jump2) {
                 return jump2;
             }
             if (event.type == SDL_EVENT_KEY_DOWN) {
-                if (event.key.key == SDLK_LEFT || event.key.key == SDLK_UP) {
-                    selection = (selection + 1) % 2;
-                } else if (event.key.key == SDLK_RIGHT || event.key.key == SDLK_DOWN) {
-                    selection = (selection + 1) % 2;
+                if (event.key.key == SDLK_LEFT || event.key.key == SDLK_UP ||
+                    event.key.key == SDLK_RIGHT || event.key.key == SDLK_DOWN) {
+                    selection = 1 - selection;
                 } else if (event.key.key == SDLK_RETURN || event.key.key == SDLK_SPACE || event.key.key == SDLK_Y) {
                     running = false;
                 } else if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_N) {
@@ -1981,30 +2085,17 @@ int EventManager::Instruct_AskRest(int jump1, int jump2) {
                 }
             }
         }
-        
-        GameManager::getInstance().RenderScreenTo(UIManager::getInstance().GetRenderer());
-        UIManager::getInstance().DrawRectangle(centerX - 75, centerY - 85, 150, 30, 0, frameColor, 30);
-        UIManager::getInstance().DrawShadowTextUtf8(" 是否需要住宿？", centerX - 70, centerY - 82, color1, color2);
-        
-        uint32_t selColor1 = GraphicsUtils::getPaletteColor(0x64);
-        uint32_t selColor2 = GraphicsUtils::getPaletteColor(0x66);
-        uint32_t norColor1 = GraphicsUtils::getPaletteColor(5);
-        uint32_t norColor2 = GraphicsUtils::getPaletteColor(7);
-        
-        if (selection == 0) {
-            UIManager::getInstance().DrawShadowTextUtf8(" 要求", centerX - 49, centerY - 50, selColor1, selColor2);
-            UIManager::getInstance().DrawShadowTextUtf8(" 取消", centerX + 1, centerY - 50, norColor1, norColor2);
-        } else {
-            UIManager::getInstance().DrawShadowTextUtf8(" 要求", centerX - 49, centerY - 50, norColor1, norColor2);
-            UIManager::getInstance().DrawShadowTextUtf8(" 取消", centerX + 1, centerY - 50, selColor1, selColor2);
-        }
-        
+
+        GameManager::getInstance().RedrawRoamingScene();
+        UIManager::getInstance().DrawTextWithRectUtf8(title, centerX - 75, centerY - 85, titleW,
+            0x05FFFFFF, 0x07FFFFFF);
+        UIManager::getInstance().DrawCommonMenu2(centerX - 49, centerY - 50, 98, selection, optYes, optNo);
+
         VirtualControls::present(UIManager::getInstance().GetRenderer());
         SDL_Delay(16);
     }
-    
+
     Instruct_Redraw();
-    
     return (selection == 0) ? jump1 : jump2;
 }
 
@@ -2045,10 +2136,10 @@ int EventManager::Instruct_CheckMoney(int moneyNeeded, int jump1, int jump2) {
 }
 
 void EventManager::Instruct_FadeIn() {
-    // Pascal instruct_13: InitialScene; then fade black overlay out while Redraw
+    // Pascal instruct_13: InitialScene, then fade black overlay out while Redraw each step.
     SceneManager::getInstance().InitialScene();
-    Instruct_Redraw();
     UIManager::getInstance().FadeScreen(true);
+    Instruct_Redraw();
 }
 
 void EventManager::Instruct_FadeOut() {
@@ -2733,11 +2824,19 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             int x = eGet(0, e3);
             int y = eGet(1, e4);
             int pic = eGet(2, e5);
-            // Best-effort: head / item pics; scene/mmap tiles need fuller PicLoader wiring
+            int where = GameManager::getInstance().getWhere();
+            SDL_Renderer* renderer = UIManager::getInstance().GetRenderer();
             if (e2 == 1) {
                 UIManager::getInstance().DrawHead(pic, x, y);
             } else if (e2 == 2) {
                 UIManager::getInstance().DrawItemPicWithOffset(pic, x, y);
+            } else if (e2 == 0) {
+                if (where != 0 && renderer) {
+                    int idx = (pic > 0) ? (pic / 2) : ((-pic) / 2);
+                    SceneManager::getInstance().DrawTile(renderer, idx, x, y, 0, 0);
+                } else if (renderer) {
+                    SceneManager::getInstance().DrawTile(renderer, pic / 2, x, y, 0, 0);
+                }
             } else {
                 std::cout << "[instruct_50e case 41] draw pic type=" << e2
                           << " x=" << x << " y=" << y << " id=" << pic << std::endl;
@@ -2810,34 +2909,45 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
             break;
         }
         case 50: {
-            // Enter name into role/item/magic/scene data field (GBK bytes)
             int kind = eGet(0, e2);
             int idx = eGet(1, e3);
             int fieldOff = eGet(2, e4);
             int maxLen = eGet(3, e5);
             if (maxLen <= 0) maxLen = 10;
             if (maxLen > 20) maxLen = 20;
-            // Keep existing name unless we have a UI; log for now
-            std::string cur;
+            std::string curGbk;
             switch (kind) {
-                case 0: cur = GameManager::getInstance().getRole(idx).getName(); break;
-                case 1: cur = GameManager::getInstance().getItem(idx).getName(); break;
-                case 2: cur = GameManager::getInstance().getMagic(idx).getName(); break;
+                case 0: curGbk = GameManager::getInstance().getRole(idx).getName(); break;
+                case 1: curGbk = GameManager::getInstance().getItem(idx).getName(); break;
+                case 2: curGbk = GameManager::getInstance().getMagic(idx).getName(); break;
                 case 3: {
                     Scene* sc = SceneManager::getInstance().GetScene(idx);
-                    cur = sc ? sc->getName() : "";
+                    curGbk = sc ? sc->getName() : "";
                     break;
                 }
             }
-            std::cout << "[instruct_50e case 50] rename kind=" << kind << " idx=" << idx
-                      << " field=" << fieldOff << " keep='" << cur << "'" << std::endl;
+            std::string curUtf8 = TextManager::getInstance().gbkToUtf8(curGbk);
+            if (!curUtf8.empty() && curUtf8[0] == ' ') curUtf8 = curUtf8.substr(1);
+            std::string newUtf8 = UIManager::getInstance().ShowInputBox(
+                TextManager::getInstance().gbkToUtf8("請輸入名稱"), curUtf8);
+            std::string newGbk = TextManager::getInstance().utf8ToGbk(newUtf8);
+            if ((int)newGbk.size() > maxLen) newGbk.resize(maxLen);
+            switch (kind) {
+                case 0: GameManager::getInstance().getRole(idx).setName(newGbk); break;
+                case 1: GameManager::getInstance().getItem(idx).setName(newGbk); break;
+                case 2: GameManager::getInstance().getMagic(idx).setName(newGbk); break;
+                case 3: {
+                    Scene* sc = SceneManager::getInstance().GetScene(idx);
+                    if (sc) sc->setName(newGbk);
+                    break;
+                }
+            }
             (void)fieldOff;
             break;
         }
         case 51: {
-            // InputAmount — without UI default 0
-            std::cout << "[instruct_50e case 51] InputAmount stub -> 0" << std::endl;
-            GameManager::getInstance().setX50(e1, 0);
+            int amount = UIManager::getInstance().InputAmount();
+            GameManager::getInstance().setX50(e1, amount);
             break;
         }
         case 52: {
@@ -2857,6 +2967,14 @@ int EventManager::Instruct_50e(int code, int e1, int e2, int e3, int e4, int e5,
                     }
                 }
             }
+            break;
+        }
+        case 60: {
+            // Pascal: Lua script hook commented out — explicit no-op
+            int scriptId = eGet(0, e2);
+            int funcId = eGet(1, e3);
+            std::cout << "[instruct_50e case 60] script hook (no-op) id=" << scriptId
+                      << " func=" << funcId << std::endl;
             break;
         }
         case 43: {
@@ -2890,23 +3008,7 @@ void EventManager::Instruct_Delay(int time) {
 }
 
 void EventManager::Instruct_Redraw() {
-    SDL_Renderer* renderer = UIManager::getInstance().GetRenderer();
-    if (!renderer) return;
-
-    int cx, cy;
-    GameManager::getInstance().getCameraPosition(cx, cy);
-
-    // Clear background
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    // Draw Scene (updates surface and uploads to texture)
-    SceneManager::getInstance().DrawScene(renderer, cx, cy);
-
-    // CRITICAL: Update texture from surface before presenting
-    GameManager::getInstance().RenderScreenTo(renderer);
-
-    // Present
+    GameManager::getInstance().RedrawRoamingScene();
     UIManager::getInstance().UpdateScreen();
 }
 
@@ -2945,6 +3047,55 @@ void EventManager::Instruct_38(int sceneId, int layer, int oldPic, int newPic) {
     }
 }
 
+void EventManager::ApplyInstruct50Result(int& pc, int result) {
+    if (result == 0) return;
+    if (result < 622592) {
+        pc += result;
+        return;
+    }
+    // Pascal: e[i + ((p + 32768) div 655360) - 1] := p mod 655360;
+    int idx = (result + 32768) / 655360;
+    int val = result % 655360;
+    int writePos = pc + idx - 1;
+    if (writePos >= 0 && writePos < static_cast<int>(m_eventScripts.size())) {
+        m_eventScripts[writePos] = static_cast<int16_t>(val);
+        std::cout << "[instruct_50] script[" << writePos << "] := " << val << std::endl;
+    } else {
+        std::cerr << "[instruct_50] script memory write out of bounds at " << writePos << std::endl;
+    }
+}
+
+int16_t EventManager::GetScriptWord(int index) const {
+    if (index < 0 || index >= static_cast<int>(m_eventScripts.size())) return 0;
+    return m_eventScripts[index];
+}
+
+void EventManager::AddMockScript(int id, const std::vector<int16_t>& script) {
+    int byteOffset = static_cast<int>(m_eventScripts.size()) * 2;
+    while (static_cast<int>(m_eventIndices.size()) < id - 1) {
+        m_eventIndices.push_back(0);
+    }
+    if (static_cast<int>(m_eventIndices.size()) == id - 1) {
+        m_eventIndices.push_back(byteOffset);
+    } else if (id > 0 && id <= static_cast<int>(m_eventIndices.size())) {
+        m_eventIndices[id - 1] = byteOffset;
+    }
+    m_eventScripts.insert(m_eventScripts.end(), script.begin(), script.end());
+    if (static_cast<int>(m_eventIndices.size()) == id) {
+        m_eventIndices.push_back(static_cast<int32_t>(m_eventScripts.size() * 2));
+    } else if (id > 0 && id < static_cast<int>(m_eventIndices.size())) {
+        m_eventIndices[id] = static_cast<int32_t>(m_eventScripts.size() * 2);
+    }
+}
+
+int EventManager::ExecuteScriptBuffer(const std::vector<int16_t>& script) {
+    int mockId = std::max(1, static_cast<int>(m_eventIndices.size()) + 1);
+    int startPc = static_cast<int>(m_eventScripts.size());
+    AddMockScript(mockId, script);
+    ExecuteEvent(mockId);
+    return startPc + static_cast<int>(script.size());
+}
+
 void EventManager::PrintEventScript(int eventScriptId) {
     if (eventScriptId <= 0 || eventScriptId > m_eventIndices.size()) {
         std::cerr << "PrintEventScript: Invalid ID " << eventScriptId << ". Max ID: " << m_eventIndices.size() << std::endl;
@@ -2973,31 +3124,63 @@ void EventManager::PrintEventScript(int eventScriptId) {
 }
 
 void EventManager::Instruct_27(int eventId, int beginPic, int endPic) {
-    // Animation: Updates DData[e, 5] (Pic) from beginPic to endPic
-    // In KYS, this is blocking animation.
     int sceneId = m_executingSceneId;
-    if (eventId == -2) eventId = m_executingEventId;
-    
-    // Store original pic? Pascal logic:
-    // oldpic := DData[CurScene, enum, 5];
-    // loop...
-    // DData[..., 5] := DData[..., 7]; (Reset to default?)
-    // Actually, looking at Pascal:
-    // DData[CurScene, enum, 5] := picsign * i;
-    // ...
-    // DData[CurScene, enum, 5] := DData[CurScene, enum, 7];
-    
-    int step = (beginPic <= endPic) ? 1 : -1;
-    for (int i = beginPic; i != endPic + step; i += step) {
-        SceneManager::getInstance().SetEventData(sceneId, eventId, 5, i);
-        Instruct_Redraw(); // Helper to update screen
-        int animDelay = (65 * GameManager::getInstance().getGameSpeed()) / 10;
+    if (sceneId < 0) sceneId = GameManager::getInstance().getCurrentSceneId();
+
+    bool aboutMainRole = false;
+    if (eventId == -1) {
+        eventId = m_executingEventId;
+        int px = 0, py = 0;
+        GameManager::getInstance().getMainMapPosition(px, py);
+        int tileEvent = SceneManager::getInstance().GetSceneTile(sceneId, 3, px, py);
+        if (tileEvent >= 0) eventId = tileEvent;
+        aboutMainRole = true;
+    } else if (eventId == -2) {
+        eventId = m_executingEventId;
+    }
+
+    int px = 0, py = 0;
+    GameManager::getInstance().getMainMapPosition(px, py);
+    if (eventId == SceneManager::getInstance().GetSceneTile(sceneId, 3, px, py)) {
+        aboutMainRole = true;
+    }
+
+    auto& sm = SceneManager::getInstance();
+    const int evX = sm.GetEventData(sceneId, eventId, 10);
+    const int evY = sm.GetEventData(sceneId, eventId, 9);
+    if (evX > 0 && evY >= 0) {
+        sm.SetSceneTile(sceneId, 3, evX, evY, static_cast<int16_t>(eventId));
+    }
+
+    int16_t oldPic = sm.GetEventData(sceneId, eventId, 5);
+    const int picSign = (beginPic > 0) ? 1 : (beginPic < 0 ? -1 : 1);
+    const int animDelay = std::max(1, (65 * GameManager::getInstance().getGameSpeed()) / 10);
+    const bool prevShowMR = GameManager::getInstance().getShowMR();
+
+    for (int i = std::abs(beginPic); i <= std::abs(endPic); ++i) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                GameManager::getInstance().Quit();
+                GameManager::getInstance().setShowMR(prevShowMR);
+                return;
+            }
+        }
+
+        const int newPic = picSign * i;
+        sm.SetEventData(sceneId, eventId, 5, static_cast<int16_t>(newPic));
+        sm.UpdateSceneGraphic(evX, evY, oldPic, newPic);
+        oldPic = static_cast<int16_t>(newPic);
+
+        GameManager::getInstance().setShowMR(aboutMainRole ? false : prevShowMR);
+        Instruct_Redraw();
         SDL_Delay(animDelay);
     }
-    
-    // Restore to Index 7 (Default Pic)
-    int16_t defaultPic = SceneManager::getInstance().GetEventData(sceneId, eventId, 7);
-    SceneManager::getInstance().SetEventData(sceneId, eventId, 5, defaultPic);
+
+    const int16_t defaultPic = sm.GetEventData(sceneId, eventId, 7);
+    sm.SetEventData(sceneId, eventId, 5, defaultPic);
+    sm.UpdateSceneGraphic(evX, evY, oldPic, defaultPic);
+    GameManager::getInstance().setShowMR(prevShowMR);
     Instruct_Redraw();
 }
 
@@ -3007,34 +3190,43 @@ void EventManager::Instruct_23(int roleId, int poison) {
 }
 
 void EventManager::Instruct_44(int eventId1, int beginPic1, int endPic1, int eventId2, int beginPic2, int endPic2) {
-    // Dual Animation
     int sceneId = m_executingSceneId;
     if (eventId1 == -2) eventId1 = m_executingEventId;
-    // eventId2 can also be -2, although rare for dual animation
     if (eventId2 == -2) eventId2 = m_executingEventId;
 
-    int len1 = abs(endPic1 - beginPic1);
-    int len2 = abs(endPic2 - beginPic2);
-    int len = std::max(len1, len2);
-    
-    int step1 = (beginPic1 <= endPic1) ? 1 : -1;
-    int step2 = (beginPic2 <= endPic2) ? 1 : -1;
-    
-    for (int i = 0; i <= len; ++i) {
-        int pic1 = beginPic1 + (i <= len1 ? i * step1 : len1 * step1);
-        int pic2 = beginPic2 + (i <= len2 ? i * step2 : len2 * step2);
-        
-        SceneManager::getInstance().SetEventData(sceneId, eventId1, 5, pic1);
-        SceneManager::getInstance().SetEventData(sceneId, eventId2, 5, pic2);
+    auto& sm = SceneManager::getInstance();
+    const int animDelay = std::max(1, (65 * GameManager::getInstance().getGameSpeed()) / 10);
+
+    const int picSign1 = (beginPic1 > 0) ? 1 : (beginPic1 < 0 ? -1 : 1);
+    const int picSign2 = (beginPic2 > 0) ? 1 : (beginPic2 < 0 ? -1 : 1);
+    const int len = std::max(std::abs(endPic1) - std::abs(beginPic1),
+                             std::abs(endPic2) - std::abs(beginPic2));
+
+    for (int frame = 0; frame <= len; ++frame) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                GameManager::getInstance().Quit();
+                return;
+            }
+        }
+
+        if (frame <= std::abs(endPic1) - std::abs(beginPic1)) {
+            const int pic1 = picSign1 * (std::abs(beginPic1) + frame);
+            sm.SetEventData(sceneId, eventId1, 5, static_cast<int16_t>(pic1));
+        }
+        if (frame <= std::abs(endPic2) - std::abs(beginPic2)) {
+            const int pic2 = picSign2 * (std::abs(beginPic2) + frame);
+            sm.SetEventData(sceneId, eventId2, 5, static_cast<int16_t>(pic2));
+        }
         Instruct_Redraw();
-        SDL_Delay(65);
+        SDL_Delay(animDelay);
     }
-    
-    // Restore
-    int16_t def1 = SceneManager::getInstance().GetEventData(sceneId, eventId1, 7);
-    int16_t def2 = SceneManager::getInstance().GetEventData(sceneId, eventId2, 7);
-    SceneManager::getInstance().SetEventData(sceneId, eventId1, 5, def1);
-    SceneManager::getInstance().SetEventData(sceneId, eventId2, 5, def2);
+
+    const int16_t def1 = sm.GetEventData(sceneId, eventId1, 7);
+    const int16_t def2 = sm.GetEventData(sceneId, eventId2, 7);
+    sm.SetEventData(sceneId, eventId1, 5, def1);
+    sm.SetEventData(sceneId, eventId2, 5, def2);
     Instruct_Redraw();
 }
 

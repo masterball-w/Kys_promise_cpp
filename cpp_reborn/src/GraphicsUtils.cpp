@@ -6,6 +6,45 @@
 
 std::vector<uint8_t> GraphicsUtils::m_fullPaletteData;
 std::vector<uint32_t> GraphicsUtils::m_currentPaletteRGBA;
+int GraphicsUtils::m_scenePalletTint = 0;
+
+void GraphicsUtils::setScenePalletTint(int pallet) {
+    if (pallet < 0 || pallet > 3) pallet = 0;
+    m_scenePalletTint = pallet;
+}
+
+bool GraphicsUtils::paletteSetIsEmpty(int index) {
+    if (m_fullPaletteData.size() < 768) return true;
+    if (index < 0 || index > 3) return true;
+    const size_t offset = static_cast<size_t>(index) * 768;
+    if (offset + 768 > m_fullPaletteData.size()) return true;
+    for (size_t i = 0; i < 768; ++i) {
+        if (m_fullPaletteData[offset + i] != 0) return false;
+    }
+    return true;
+}
+
+void GraphicsUtils::applyScenePalletTint(int& r, int& g, int& b) {
+    switch (m_scenePalletTint) {
+        case 1:
+            r = (69 * r) / 100;
+            g = (73 * g) / 100;
+            b = (75 * b) / 100;
+            break;
+        case 2:
+            r = (85 * r) / 100;
+            g = (75 * g) / 100;
+            b = (30 * b) / 100;
+            break;
+        case 3:
+            r = (25 * r) / 100;
+            g = (68 * g) / 100;
+            b = (45 * b) / 100;
+            break;
+        default:
+            break;
+    }
+}
 
 void GraphicsUtils::loadPalette(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
@@ -14,9 +53,15 @@ void GraphicsUtils::loadPalette(const std::string& filename) {
         return;
     }
     
-    // Palette file is expected to be 4 * 768 bytes (4 sets of 256 colors * 3 channels)
-    m_fullPaletteData.resize(4 * 768);
+    // Pascal loads 4 * 768 bytes into Col[0..3]. Some distributions ship a single set.
+    m_fullPaletteData.resize(4 * 768, 0);
     file.read(reinterpret_cast<char*>(m_fullPaletteData.data()), m_fullPaletteData.size());
+    const std::streamsize bytesRead = file.gcount();
+    if (bytesRead > 0 && bytesRead <= 768) {
+        for (int set = 1; set < 4; ++set) {
+            std::memcpy(m_fullPaletteData.data() + set * 768, m_fullPaletteData.data(), 768);
+        }
+    }
     
     // Initialize current palette with the first set
     resetPalette(0);
@@ -25,6 +70,7 @@ void GraphicsUtils::loadPalette(const std::string& filename) {
 void GraphicsUtils::resetPalette(int index) {
     if (m_fullPaletteData.empty()) return;
     if (index < 0 || index > 3) index = 0;
+    if (paletteSetIsEmpty(index)) index = 0;
     
     size_t offset = index * 768;
     if (offset + 768 > m_fullPaletteData.size()) return;
@@ -80,6 +126,17 @@ void GraphicsUtils::ChangeCol(uint32_t ticks) {
 uint32_t GraphicsUtils::getPaletteColor(int index) {
     if (index < 0 || index >= (int)m_currentPaletteRGBA.size()) return 0;
     return m_currentPaletteRGBA[index];
+}
+
+uint32_t GraphicsUtils::getUIPaletteColor(int index) {
+    if (m_fullPaletteData.empty()) return 0;
+    if (index < 0 || index > 255) return 0;
+    size_t offset = index * 3; // palette set 0
+    if (offset + 2 >= 768) return 0;
+    uint8_t r = m_fullPaletteData[offset + 0];
+    uint8_t g = m_fullPaletteData[offset + 1];
+    uint8_t b = m_fullPaletteData[offset + 2];
+    return mapRGB(r * 4, g * 4, b * 4);
 }
 
 void GraphicsUtils::setAColByte(int byteIndex, uint8_t value) {
@@ -150,6 +207,54 @@ uint32_t GraphicsUtils::GetPixel(SDL_Surface* surface, int x, int y) {
     
     uint32_t* pixels = (uint32_t*)surface->pixels;
     return pixels[y * (surface->pitch / 4) + x];
+}
+
+void GraphicsUtils::BlendRectangleOnSurface(SDL_Surface* surface, int x, int y, int w, int h,
+                                            uint8_t r, uint8_t g, uint8_t b, uint8_t a,
+                                            int alphaPercent) {
+    if (!surface || alphaPercent <= 0) return;
+    if (alphaPercent > 100) alphaPercent = 100;
+
+    const int xEnd = x + w;
+    const int yEnd = y + h;
+    for (int i1 = x; i1 <= xEnd; ++i1) {
+        for (int i2 = y; i2 <= yEnd; ++i2) {
+            if (i1 < 0 || i2 < 0 || i1 >= surface->w || i2 >= surface->h) continue;
+
+            const uint32_t pix = GetPixel(surface, i1, i2);
+            uint8_t pix1 = static_cast<uint8_t>(pix & 0xFF);
+            uint8_t pix2 = static_cast<uint8_t>((pix >> 8) & 0xFF);
+            uint8_t pix3 = static_cast<uint8_t>((pix >> 16) & 0xFF);
+            uint8_t pix4 = static_cast<uint8_t>((pix >> 24) & 0xFF);
+
+            pix1 = static_cast<uint8_t>((alphaPercent * r + (100 - alphaPercent) * pix1) / 100);
+            pix2 = static_cast<uint8_t>((alphaPercent * g + (100 - alphaPercent) * pix2) / 100);
+            pix3 = static_cast<uint8_t>((alphaPercent * b + (100 - alphaPercent) * pix3) / 100);
+            // Keep alpha opaque — transparent fade pixels make SDL_RenderTexture show black.
+            (void)a;
+            (void)pix4;
+
+            const uint32_t blended = pix1 | (static_cast<uint32_t>(pix2) << 8) |
+                                   (static_cast<uint32_t>(pix3) << 16) |
+                                   (static_cast<uint32_t>(255) << 24);
+            DrawPixel(surface, i1, i2, blended);
+        }
+    }
+}
+
+void GraphicsUtils::EnsureSurfaceOpaque(SDL_Surface* surface) {
+    if (!surface || !surface->pixels) return;
+    const int w = surface->w;
+    const int h = surface->h;
+    if (w <= 0 || h <= 0) return;
+    const int pitchPixels = surface->pitch / 4;
+    uint32_t* row = static_cast<uint32_t*>(surface->pixels);
+    for (int y = 0; y < h; ++y) {
+        uint32_t* pixels = row + y * pitchPixels;
+        for (int x = 0; x < w; ++x) {
+            pixels[x] |= 0xFF000000u;
+        }
+    }
 }
 
 void GraphicsUtils::DrawRLE8(SDL_Surface* dest, int x, int y, const uint8_t* rawData, size_t dataSize, int shadow, float scale, int green, int red, int gray, int white) {
@@ -267,6 +372,15 @@ void GraphicsUtils::DrawRLE8(SDL_Surface* dest, int x, int y, const uint8_t* raw
                     r = std::min(std::max(r, 0), 255);
                     g = std::min(std::max(g, 0), 255);
                     b = std::min(std::max(b, 0), 255);
+                    applyScenePalletTint(r, g, b);
+                    color = mapRGB(static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b));
+                }
+
+                if (!useTint && shadow == 0 && m_scenePalletTint > 0) {
+                    int r = (color >> 16) & 0xFF;
+                    int g = (color >> 8) & 0xFF;
+                    int b = color & 0xFF;
+                    applyScenePalletTint(r, g, b);
                     color = mapRGB(static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b));
                 }
 

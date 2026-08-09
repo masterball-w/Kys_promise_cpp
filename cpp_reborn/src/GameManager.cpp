@@ -6,6 +6,7 @@
 #include "FileLoader.h"
 #include "PicLoader.h"
 #include "TextManager.h"
+#include "GraphicsUtils.h"
 #include "InputManager.h"
 #include "SoundManager.h"
 #include "PlatformCompat.h"
@@ -110,6 +111,9 @@ bool GameManager::Init() {
 
     m_screenSurface = SDL_CreateSurface(640, 480, SDL_PIXELFORMAT_ARGB8888);
     m_screenTexture = SDL_CreateTexture(m_renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 640, 480);
+    if (m_screenTexture) {
+        SDL_SetTextureBlendMode(m_screenTexture, SDL_BLENDMODE_NONE);
+    }
 
     if (!UIManager::getInstance().Init(m_renderer, m_window)) {
         std::cerr << "Failed to init UIManager" << std::endl;
@@ -701,12 +705,11 @@ void GameManager::SaveGame(int slot) {
 
     grpFile.close();
 
-    // Slot 0 files (allsin/alldef) are the NEW-GAME templates.
-    // Writing post-script D/S back onto them permanently breaks opening scenes
-    // (e.g. event0 8284→0, Kong Pili moved from bedroom to hall). Softstar
-    // allowed this; we keep templates pristine and only write S/D for slots 1+.
+    // Slot 0: template snapshot (ranger + allsin + alldef). Autosave uses AUTOSAVE_SLOT (6).
     if (slot == 0) {
-        std::cout << "Game Saved to Slot 0 (ranger only; alldef/allsin templates preserved)" << std::endl;
+        SceneManager::getInstance().SaveMapData(m_savePath + "allsin.grp");
+        SceneManager::getInstance().SaveEventData(m_savePath + "alldef.grp");
+        std::cout << "Game Saved to Slot 0 (ranger + allsin + alldef)" << std::endl;
         return;
     }
 
@@ -1017,6 +1020,30 @@ bool GameManager::LoadGame(int slot) {
     
     std::cout << "Game Loaded from Slot " << slot << std::endl;
     return true;
+}
+
+void GameManager::ResumeAfterLoad() {
+    UIManager::getInstance().ReleaseMenuBackground();
+
+    m_cameraX = m_mainMapX;
+    m_cameraY = m_mainMapY;
+    SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
+
+    if (m_currentSceneId >= 0) {
+        // Pascal NewMenuLoad: WalkInScene(0) → InitialScene, DrawScene, ShowSceneName, CheckEvent3
+        SceneManager::getInstance().InitialScene();
+        RedrawRoamingScene();
+        UIManager::getInstance().ShowSceneName(m_currentSceneId);
+        EventManager::getInstance().CheckEvent(m_currentSceneId, m_mainMapX, m_mainMapY, false);
+    } else {
+        reSetEntrance();
+        RedrawRoamingScene();
+    }
+
+    UIManager::getInstance().UpdateScreen();
+    InputManager::getInstance().FlushEvents();
+    VirtualControls::clearTapLatches();
+    VirtualControls::releaseAll();
 }
 
 // ==========================================
@@ -1332,9 +1359,6 @@ void GameManager::UpdateTitleScreen() {
             DrawTitleMenu();
             UIManager::getInstance().CaptureScreen();
             if (UIManager::getInstance().ShowSaveLoadMenu(false)) {
-                m_cameraX = m_mainMapX;
-                m_cameraY = m_mainMapY;
-                SceneManager::getInstance().SetCurrentScene(m_currentSceneId);
                 m_currentState = GameState::Roaming;
             }
         } else if (m_titleMenuSelection == 2) {
@@ -1448,6 +1472,7 @@ void GameManager::UpdateCharacterCreation() {
                 getRole(0).setName(TextManager::getInstance().utf8ToGbk(m_characterCreationNameUtf8));
                 RandomizeRoleStats(getRole(0));
             }
+            UIManager::getInstance().MenuDifficult();
             m_charCreatePhase = CharCreatePhase::AttributeSelect;
         } else {
             if (getRoleCount() > 0) {
@@ -1665,7 +1690,7 @@ void GameManager::UpdateRoaming() {
                         std::cout << "[ExitScene] Now at world map (" << m_mainMapX << "," << m_mainMapY << ")" << std::endl;
                         
                         if (m_screenSurface) {
-                            SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+                            SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
                             SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
                         }
                         
@@ -1685,7 +1710,7 @@ void GameManager::UpdateRoaming() {
                 
                 // 先渲染一帧，显示人物朝向改变
                 if (m_screenSurface) {
-                    SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+                    SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
                     SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
                     RenderScreenTo(m_renderer);
                 }
@@ -1752,7 +1777,16 @@ void GameManager::UpdateRoaming() {
                         UIManager::getInstance().ShowStatus(m_teamList[0]);
                     }
                     break;
-
+                case SDLK_M:
+                    if (m_currentSceneId < 0) {
+                        UIManager::getInstance().ShowMap();
+                    }
+                    break;
+                case SDLK_1: case SDLK_2: case SDLK_3:
+                case SDLK_4: case SDLK_5: case SDLK_6:
+                case SDLK_KP_1: case SDLK_KP_2: case SDLK_KP_3:
+                case SDLK_KP_4: case SDLK_KP_5: case SDLK_KP_6:
+                    break; // handled on KEY_UP via CheckHotkey
                 case SDLK_ESCAPE:
                     m_currentState = GameState::SystemMenu;
                     break;
@@ -1769,7 +1803,11 @@ void GameManager::UpdateRoaming() {
                 tryMove(dx, dy);
             }
         } else if (e.type == SDL_EVENT_KEY_UP) {
-            if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
+            if (e.key.key >= SDLK_1 && e.key.key <= SDLK_6) {
+                UIManager::getInstance().CheckHotkey(e.key.key);
+            } else if (e.key.key >= SDLK_KP_1 && e.key.key <= SDLK_KP_6) {
+                UIManager::getInstance().CheckHotkey(SDLK_1 + (e.key.key - SDLK_KP_1));
+            } else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
                 if (m_currentSceneId >= 0) {
                     int frontX = 0, frontY = 0;
                     getFacingTile(frontX, frontY);
@@ -1840,7 +1878,7 @@ void GameManager::UpdateRoaming() {
     }
     
     if (m_screenSurface) {
-        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
         SceneManager::getInstance().DrawScene(m_renderer, m_cameraX, m_cameraY);
         RenderScreenTo(m_renderer);
     }
@@ -1925,6 +1963,8 @@ bool GameManager::TryEnterScene(int sceneId) {
 
     if (!canEntrance) return false;
 
+    SaveAutoGame();
+
     UIManager::getInstance().FadeScreen(false);
 
     int worldX = m_mainMapX;
@@ -1963,10 +2003,11 @@ bool GameManager::TryEnterScene(int sceneId) {
     setMainMapPosition(entranceX, entranceY);
 
     if (m_screenSurface) {
-        SDL_FillSurfaceRect(m_screenSurface, NULL, 0x000000);
+        SDL_FillSurfaceRect(m_screenSurface, NULL, 0xFF000000);
         SceneManager::getInstance().DrawScene(m_renderer, entranceX, entranceY);
     }
     UIManager::getInstance().ShowSceneName(sceneId);
+    UIManager::getInstance().FadeScreen(true);
 
     return true;
 }
@@ -2007,8 +2048,26 @@ void GameManager::UpdateInventoryMenu() {
 
 void GameManager::RenderScreenTo(SDL_Renderer* renderer) {
     if (!renderer || !m_screenSurface || !m_screenTexture) return;
+    GraphicsUtils::EnsureSurfaceOpaque(m_screenSurface);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetTextureBlendMode(m_screenTexture, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
     SDL_UpdateTexture(m_screenTexture, NULL, m_screenSurface->pixels, m_screenSurface->pitch);
     SDL_RenderTexture(renderer, m_screenTexture, NULL, NULL);
+}
+
+void GameManager::DrawRoamingSceneToSurface() {
+    if (!m_renderer || !m_screenSurface) return;
+    int cx = 0;
+    int cy = 0;
+    getCameraPosition(cx, cy);
+    SceneManager::getInstance().DrawScene(m_renderer, cx, cy);
+}
+
+void GameManager::RedrawRoamingScene() {
+    DrawRoamingSceneToSurface();
+    RenderScreenTo(m_renderer);
 }
 
 Role& GameManager::getRole(int index) {

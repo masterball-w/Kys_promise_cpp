@@ -133,6 +133,8 @@ public:
     // Render Helper
     SDL_Surface* getScreenSurface() { return m_screenSurface; }
     void RenderScreenTo(SDL_Renderer* renderer);
+    void DrawRoamingSceneToSurface();
+    void RedrawRoamingScene();
     void getMainMapPosition(int& x, int& y) const { x = m_mainMapX; y = m_mainMapY; }
     void getCameraPosition(int& x, int& y) const { x = m_cameraX; y = m_cameraY; }
     void getSavedWorldPosition(int& x, int& y) const { x = m_savedWorldX; y = m_savedWorldY; }
@@ -219,8 +221,15 @@ public:
     int getNextLevelExp(int level);
 
     // Save/Load
+    // Pascal: slot 0 = ranger/allsin/alldef template; slot 6 = 自動檔 (SaveR/LoadR(6)).
+    static constexpr int TEMPLATE_SAVE_SLOT = 0;
+    static constexpr int AUTOSAVE_SLOT = 6;
+
     void SaveGame(int slot);
     bool LoadGame(int slot);
+    void SaveAutoGame() { SaveGame(AUTOSAVE_SLOT); }
+    // Pascal NewMenuLoad / WalkInScene(0): redraw loaded state and dismiss menu overlays.
+    void ResumeAfterLoad();
 
     // Game Logic
     void LearnMagic(int roleIdx, int magicIdx, int mode);

@@ -1,0 +1,38 @@
+name: cpp_reborn CI
+
+on:
+  push:
+    paths:
+      - 'cpp_reborn/**'
+      - 'editor/**'
+      - '.github/workflows/cpp_reborn_ci.yml'
+  pull_request:
+    paths:
+      - 'cpp_reborn/**'
+      - 'editor/**'
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S cpp_reborn -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build targets
+        run: |
+          cmake --build build --config Debug --target kys_cpp
+          cmake --build build --config Debug --target test_event
+          cmake --build build --config Debug --target test_battle
+          cmake --build build --config Debug --target save_inspector
+
+      - name: Run test_event
+        working-directory: build/Debug
+        run: .\test_event.exe
+
+      - name: Editor tests
+        working-directory: editor
+        run: |
+          python -m pip install pytest --quiet
+          python -m pytest tests -q

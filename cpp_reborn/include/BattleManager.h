@@ -131,6 +131,7 @@ private:
     void CheckLevelUp();
     void RestoreRoleStatus();
     void AutoBattle(int roleIdx);
+    void AutoBattle2(int roleIdx);
     int SelectAutoMode();
     int SelectAutoTarget(int roleIdx);
     void CheckBook();
