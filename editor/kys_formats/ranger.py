@@ -37,6 +37,10 @@ class RangerLayout:
     magic_words: int = MAGIC_WORDS
     shop_words: int = SHOP_WORDS
     inventory_slots: int = INVENTORY_SLOTS
+    team_offset: int = 30
+    team_count: int = 6
+    money_offset: int = -1
+    inventory_base: int = 42
 
     @classmethod
     def from_profile(cls, profile: "GameProfile") -> "RangerLayout":
@@ -47,6 +51,10 @@ class RangerLayout:
             magic_words=profile.magic_words,
             shop_words=profile.shop_words,
             inventory_slots=profile.inventory_slots,
+            team_offset=profile.ranger_team_offset,
+            team_count=profile.ranger_team_count,
+            money_offset=profile.ranger_money_offset,
+            inventory_base=profile.ranger_inventory_base,
         )
 
 
@@ -76,6 +84,10 @@ def encode_fixed_name(text: str, nbytes: int, encoding: str = "auto") -> bytes:
 
 @dataclass
 class InventorySlot:
+    """One 4-byte inventory entry on disk: (number:i16, amount:i16).
+
+    Empty slot stores (number=-1, amount=0).
+    """
     number: int = -1
     amount: int = 0
 
@@ -98,6 +110,9 @@ class RangerHeader:
     ship_face: int = 0
     game_time: int = 0
     team: List[int] = field(default_factory=lambda: [-1] * 6)
+    # Word at offset 42 sits between team[5] and the inventory. The KYS header
+    # has a money/silver counter here for several mods (template=0, save=128).
+    money: int = 0
     inventory: List[InventorySlot] = field(default_factory=list)
 
 
@@ -151,6 +166,7 @@ class RangerArchive:
         self.magics = RecordTable(self.layout.magic_words)
         self.shops = RecordTable(self.layout.shop_words)
         self._raw: bytes = b""
+        self._header_pad: bytes = b""
 
     @staticmethod
     def find_idx(save_dir: Path) -> Path:
@@ -224,12 +240,28 @@ class RangerArchive:
         h.sface = _i16(d, 24)
         h.ship_face = _i16(d, 26)
         h.game_time = _i16(d, 28)
-        h.team = [_i16(d, 30 + i * 2) for i in range(6)]
-        inv_bytes = max(0, self.role_offset - 42)
+        h.team = [_i16(d, self.layout.team_offset + i * 2) for i in range(self.layout.team_count)]
+        while len(h.team) < self.layout.team_count:
+            h.team.append(-1)
+        team_end = self.layout.team_offset + self.layout.team_count * 2
+        pad_end = (
+            self.layout.money_offset
+            if self.layout.money_offset >= 0
+            else self.layout.inventory_base
+        )
+        if pad_end > team_end:
+            self._header_pad = bytes(d[team_end:pad_end])
+        else:
+            self._header_pad = b""
+        h.money = 0
+        if self.layout.money_offset >= 0:
+            h.money = _i16(d, self.layout.money_offset)
+        inv_base = self.layout.inventory_base
+        inv_bytes = max(0, self.role_offset - inv_base)
         slots = inv_bytes // 4
         h.inventory = []
         for i in range(slots):
-            off = 42 + i * 4
+            off = inv_base + i * 4
             h.inventory.append(InventorySlot(_i16(d, off), _i16(d, off + 2)))
         # Pad to profile inventory_slots for editor convenience
         while len(h.inventory) < self.layout.inventory_slots:
@@ -272,13 +304,23 @@ class RangerArchive:
         _set_i16(header, 24, h.sface)
         _set_i16(header, 26, h.ship_face)
         _set_i16(header, 28, h.game_time)
-        for i in range(6):
-            _set_i16(header, 30 + i * 2, h.team[i] if i < len(h.team) else -1)
-        inv_slots = (self.role_offset - 42) // 4
+        for i in range(self.layout.team_count):
+            _set_i16(
+                header,
+                self.layout.team_offset + i * 2,
+                h.team[i] if i < len(h.team) else -1,
+            )
+        team_end = self.layout.team_offset + self.layout.team_count * 2
+        if self._header_pad:
+            header[team_end : team_end + len(self._header_pad)] = self._header_pad
+        inv_base = self.layout.inventory_base
+        if self.layout.money_offset >= 0:
+            _set_i16(header, self.layout.money_offset, h.money)
+        inv_slots = (self.role_offset - inv_base) // 4
         for i in range(inv_slots):
             slot = h.inventory[i] if i < len(h.inventory) else InventorySlot(-1, 0)
-            _set_i16(header, 42 + i * 4, slot.number)
-            _set_i16(header, 42 + i * 4 + 2, slot.amount)
+            _set_i16(header, inv_base + i * 4, slot.number)
+            _set_i16(header, inv_base + i * 4 + 2, slot.amount)
 
         def pack_table(table: RecordTable, nbytes: int) -> bytes:
             words = table.words

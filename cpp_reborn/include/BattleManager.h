@@ -177,6 +177,7 @@ private:
 
     // Runtime State
     bool m_battleRunning;
+    int m_battleId = -1;
     int m_battleResult; // 0: Ongoing/Draw, 1: Win, 2: Lose
     int m_currentRoleIndex;
     int m_getExp; // Exp flag from instruction

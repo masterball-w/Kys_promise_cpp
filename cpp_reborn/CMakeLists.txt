@@ -125,7 +125,7 @@ if(KYS_BUILD_TESTS)
         src/SceneManager.cpp src/FileLoader.cpp src/GraphicsUtils.cpp
         src/GameManager.cpp src/TextManager.cpp src/PicLoader.cpp
         src/BattleManager.cpp src/BattleRole.cpp src/EventManager.cpp
-        src/UIManager.cpp src/SoundManager.cpp src/WarData.cpp
+        src/UIManager.cpp src/SoundManager.cpp src/GameHooks.cpp src/WarData.cpp
         src/PlatformCompat.cpp src/InputManager.cpp src/LittleGameManager.cpp
         src/VirtualControls.cpp
     )

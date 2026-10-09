@@ -2,7 +2,8 @@
 
 **更新日期:** 2026-08-09  
 **对齐原则:** 以 `kys_*.pas` 玩法级函数为单元；C++ 实现主要在 `cpp_reborn/src/`。状态以**源码实测**为准。  
-**Pascal 真源映射:** [PASCAL_MAPPING.md](PASCAL_MAPPING.md)  
+**权威功能对照 list:** [FEATURE_PORT_LIST.md](FEATURE_PORT_LIST.md)  
+**Pascal 早期映射（辅参考）:** [PASCAL_MAPPING.md](PASCAL_MAPPING.md)  
 **待办与分阶段计划:** [../TODO_LIST.md](../TODO_LIST.md)
 
 **状态图例**
@@ -50,7 +51,13 @@
 
 ## C. 事件解释器与指令（`kys_main.CallEvent` + `kys_event.instruct_*`）
 
-解释器循环：`EventManager::ExecuteEvent` — **Done（骨架）**。缺口在单条 opcode。
+解释器循环：`EventManager::ExecuteEvent` — **Done（骨架）**。缺口在单条 opcode。  
+完整对照见 [FEATURE_PORT_LIST.md](FEATURE_PORT_LIST.md) §4。
+
+### C0. 已知 Missing（高优先，2026-08-07 核实）
+
+- [ ] **`7` 结束事件**（Pascal `break`；C++ 无 case）
+- [ ] **`61` 相对跳转**（Pascal `i += e[i+1]; i += 3`；C++ 无 case）
 
 ### C1. 已对齐（主路径可用）
 

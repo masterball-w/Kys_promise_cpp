@@ -119,6 +119,9 @@ bool GameManager::Init() {
         std::cerr << "Failed to init UIManager" << std::endl;
         return false;
     }
+    if (!SoundManager::getInstance().Init()) {
+        std::cerr << "Audio device unavailable; continuing without sound." << std::endl;
+    }
     loadSettings();
 
     // ===== 移动逻辑测试 =====
@@ -1297,6 +1300,7 @@ void GameManager::Run() {
         }
         
         // Present is called in Update functions
+        SoundManager::getInstance().Update();
         SDL_Delay(10);
     }
     std::cout << "Exiting Game Loop..." << std::endl;
@@ -1304,6 +1308,7 @@ void GameManager::Run() {
 
 void GameManager::Quit() {
     m_isRunning = false;
+    SoundManager::getInstance().Quit();
     // SceneManager::getInstance().Cleanup(); // SceneManager does not have Cleanup
     // BattleManager::getInstance().Cleanup();
     // UIManager::getInstance().Cleanup(); // Managed by static instance but good to have explicit cleanup if needed

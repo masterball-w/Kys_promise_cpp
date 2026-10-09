@@ -7,14 +7,26 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QListWidget, QListWidgetItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QListWidgetItem,
     QPushButton, QLabel, QFileDialog, QMessageBox, QComboBox, QSpinBox,
-    QFormLayout, QInputDialog,
+    QFormLayout, QInputDialog, QCheckBox,
 )
 
 from kys_formats.pic_png import PicArchive
-from kys_formats.rle_tile import RleTilePack, load_palette
+from kys_formats.rle_tile import (
+    RleTilePack,
+    load_palette,
+    find_palette,
+    parse_tile_filename,
+    load_tile_pack_pair,
+)
 from ui.context import EditorContext
+from ui.thumb_list import LazyThumbList
+
+try:
+    from PIL import Image
+except ImportError:  # pragma: no cover
+    Image = None  # type: ignore
 
 
 def pil_to_pixmap(img) -> QPixmap:
@@ -32,7 +44,22 @@ class PicPackPanel(QWidget):
         self.path: Path | None = None
         lay = QHBoxLayout(self)
         left = QVBoxLayout()
-        self.list = QListWidget()
+        thumb_row = QHBoxLayout()
+        self.chk_thumbs = QCheckBox("缩略图")
+        self.chk_thumbs.setChecked(True)
+        self.chk_thumbs.setToolTip("仅加载可见行缩略图，带缓存上限，可关闭以省内存")
+        self.chk_thumbs.toggled.connect(self._on_thumbs_toggled)
+        thumb_row.addWidget(self.chk_thumbs)
+        thumb_row.addWidget(QLabel("尺寸"))
+        self.sp_thumb = QSpinBox()
+        self.sp_thumb.setRange(32, 96)
+        self.sp_thumb.setValue(48)
+        self.sp_thumb.valueChanged.connect(self._on_thumb_size)
+        thumb_row.addWidget(self.sp_thumb)
+        thumb_row.addStretch()
+        left.addLayout(thumb_row)
+        self.list = LazyThumbList(thumb_size=48, cache_limit=280)
+        self.list.set_thumb_loader(self._load_thumb)
         self.list.currentRowChanged.connect(self._preview)
         left.addWidget(self.list)
         btns = QHBoxLayout()
@@ -55,13 +82,28 @@ class PicPackPanel(QWidget):
         self.preview.setStyleSheet("background:#111;color:#888;")
         lay.addWidget(self.preview, 2)
 
+    def _on_thumbs_toggled(self, on: bool) -> None:
+        self.list.set_thumbs_enabled(on)
+
+    def _on_thumb_size(self, v: int) -> None:
+        self.list.set_thumb_size(v)
+
+    def _load_thumb(self, index: int) -> QPixmap | None:
+        if not self.archive or index < 0 or index >= self.archive.count:
+            return None
+        try:
+            img = self.archive.frames[index].to_image()
+        except Exception:
+            return None
+        if img is None:
+            return None
+        return pil_to_pixmap(img)
+
     def load_path(self, path: Path) -> None:
         self.path = path
         self.archive = PicArchive()
         self.archive.load(path)
-        self.list.clear()
-        for i in range(self.archive.count):
-            self.list.addItem(QListWidgetItem(f"{i}"))
+        self.list.rebuild_items([str(i) for i in range(self.archive.count)])
         self.ctx.statusMessage.emit(f"已打开 {path.name} ({self.archive.count} 帧)")
 
     def open_file(self) -> None:
@@ -99,6 +141,7 @@ class PicPackPanel(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "选择 PNG", "", "PNG (*.png)")
         if path:
             self.archive.replace_frame(row, path)
+            self.list.invalidate(row)
             self._preview(row)
 
     def append_frame(self) -> None:
@@ -108,7 +151,7 @@ class PicPackPanel(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "选择 PNG", "", "PNG (*.png)")
         if path:
             idx = self.archive.append_frame(path)
-            self.list.addItem(QListWidgetItem(f"{idx}"))
+            self.list.rebuild_items([str(i) for i in range(self.archive.count)])
             self.list.setCurrentRow(idx)
 
     def delete_frame(self) -> None:
@@ -116,7 +159,7 @@ class PicPackPanel(QWidget):
         if not self.archive or row < 0:
             return
         self.archive.delete_frame(row)
-        self.list.takeItem(row)
+        self.list.rebuild_items([str(i) for i in range(self.archive.count)])
 
     def save_file(self) -> None:
         if not self.archive:
@@ -124,6 +167,286 @@ class PicPackPanel(QWidget):
         try:
             self.archive.save(backup=True)
             QMessageBox.information(self, "保存", f"已保存 {self.archive.path}")
+        except Exception as e:
+            QMessageBox.critical(self, "失败", str(e))
+
+
+class RleTilePanel(QWidget):
+    """Edit mmap / smp / wmp RLE tile packs with single & batch PNG I/O."""
+
+    PACKS = (
+        ("mmap（大地图/建筑）", ("mmap.idx", "MMAP.idx", "Mmap.idx"), ("mmap.grp", "MMAP.grp", "Mmap.grp")),
+        ("smp（场景砖）", ("sdx", "SDX", "Sdx"), ("smp", "SMP", "Smp")),
+        ("wmp（战场砖）", ("wdx", "WDX", "Wdx"), ("wmp", "WMP", "Wmp")),
+    )
+
+    def __init__(self, ctx: EditorContext) -> None:
+        super().__init__()
+        self.ctx = ctx
+        self.pack: RleTilePack | None = None
+        self.palette = None
+        self._kind = "mmap"
+
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("砖库"))
+        self.pack_combo = QComboBox()
+        for label, _i, _g in self.PACKS:
+            self.pack_combo.addItem(label)
+        self.pack_combo.currentIndexChanged.connect(self._load_selected_pack)
+        top.addWidget(self.pack_combo)
+        btn_reload = QPushButton("重新加载")
+        btn_reload.clicked.connect(self._load_selected_pack)
+        top.addWidget(btn_reload)
+        self.chk_thumbs = QCheckBox("缩略图")
+        self.chk_thumbs.setChecked(True)
+        self.chk_thumbs.setToolTip("仅加载可见行缩略图，带缓存上限，可关闭以省内存")
+        self.chk_thumbs.toggled.connect(self._on_thumbs_toggled)
+        top.addWidget(self.chk_thumbs)
+        top.addWidget(QLabel("尺寸"))
+        self.sp_thumb = QSpinBox()
+        self.sp_thumb.setRange(32, 96)
+        self.sp_thumb.setValue(48)
+        self.sp_thumb.valueChanged.connect(self._on_thumb_size)
+        top.addWidget(self.sp_thumb)
+        top.addStretch()
+        lay.addLayout(top)
+
+        body = QHBoxLayout()
+        left = QVBoxLayout()
+        self.list = LazyThumbList(thumb_size=48, cache_limit=320)
+        self.list.set_thumb_loader(self._load_thumb)
+        self.list.currentRowChanged.connect(self._preview)
+        left.addWidget(self.list)
+        btns = QHBoxLayout()
+        for text, slot in [
+            ("导出当前", self.export_one),
+            ("导入替换", self.import_one),
+            ("追加 PNG", self.append_one),
+            ("批量导出", self.export_batch),
+            ("批量导入", self.import_batch),
+            ("保存砖库", self.save_pack),
+        ]:
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            btns.addWidget(b)
+        left.addLayout(btns)
+        body.addLayout(left, 1)
+        right = QVBoxLayout()
+        self.preview = QLabel("砖预览")
+        self.preview.setMinimumSize(256, 256)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet("background:#111;color:#888;")
+        right.addWidget(self.preview)
+        self.lbl_info = QLabel(
+            "列表缩略图按可见区域懒加载（约 300 张缓存）。\n"
+            "PNG 导入会按调色板量化并编码为 RLE8。\n"
+            "批量导入文件名：00012.png / tile_12.png / mmap_12.png。\n"
+            "大地图建筑层使用 mmap 砖号×2 作为贴图码。"
+        )
+        self.lbl_info.setWordWrap(True)
+        right.addWidget(self.lbl_info)
+        right.addStretch()
+        body.addLayout(right, 1)
+        lay.addLayout(body)
+
+        ctx.dataRootChanged.connect(lambda _: self._load_selected_pack())
+
+    def _on_thumbs_toggled(self, on: bool) -> None:
+        self.list.set_thumbs_enabled(on)
+
+    def _on_thumb_size(self, v: int) -> None:
+        self.list.set_thumb_size(v)
+
+    def _load_thumb(self, index: int) -> QPixmap | None:
+        if not self.pack or not self.palette or index < 0:
+            return None
+        if index >= self.pack.count or not self.pack.tiles[index]:
+            return None
+        try:
+            img = self.pack.decode_tile(index, self.palette, use_cache=True)
+        except Exception:
+            return None
+        if img is None:
+            return None
+        return pil_to_pixmap(img)
+
+    def _labels(self) -> list[str]:
+        if not self.pack:
+            return []
+        return [
+            f"{i}" + (" (空)" if not self.pack.tiles[i] else "")
+            for i in range(self.pack.count)
+        ]
+
+    def _load_selected_pack(self) -> None:
+        if not self.ctx.data_root:
+            return
+        idx = self.pack_combo.currentIndex()
+        if idx < 0 or idx >= len(self.PACKS):
+            return
+        label, idx_names, grp_names = self.PACKS[idx]
+        self._kind = label.split("（", 1)[0]
+        res = self.ctx.resource_dir
+        pal_path = find_palette(res)
+        try:
+            self.palette = load_palette(pal_path) if pal_path else self.ctx.palette
+            pack = load_tile_pack_pair(res, idx_names, grp_names)
+            if pack is None:
+                self.pack = None
+                self.list.rebuild_items([])
+                self.preview.setText(f"未找到 {label}")
+                return
+            self.pack = pack
+            if idx == 0 and self.ctx.mmap_tiles:
+                self.pack = self.ctx.mmap_tiles
+            elif idx == 1 and self.ctx.scene_tiles:
+                self.pack = self.ctx.scene_tiles
+            elif idx == 2 and self.ctx.battle_tiles:
+                self.pack = self.ctx.battle_tiles
+            self.list.rebuild_items(self._labels())
+            self.ctx.statusMessage.emit(f"已加载 {label}：{self.pack.count} 块")
+            if self.list.count():
+                self.list.setCurrentRow(0)
+        except Exception as e:
+            QMessageBox.critical(self, "加载失败", str(e))
+
+    def _preview(self, row: int) -> None:
+        if not self.pack or not self.palette or row < 0:
+            return
+        try:
+            img = self.pack.decode_tile(row, self.palette)
+            if img is None:
+                self.preview.setText("空/无法解码")
+                return
+            xs, ys = self.pack.get_hotspot(row)
+            self.preview.setPixmap(
+                pil_to_pixmap(img).scaled(240, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+            self.lbl_info.setText(
+                f"索引 {row}  尺寸 {img.width}×{img.height}  热点 ({xs},{ys})\n"
+                f"引擎贴图码参考：{row * 2}\n"
+                "列表缩略图懒加载；PNG 导入按调色板量化为 RLE8。"
+            )
+        except Exception as e:
+            self.preview.setText(str(e))
+
+    def export_one(self) -> None:
+        row = self.list.currentRow()
+        if not self.pack or not self.palette or row < 0:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 PNG", f"{self._kind}_{row:04d}.png", "PNG (*.png)"
+        )
+        if not path:
+            return
+        try:
+            self.pack.export_png(row, path, self.palette)
+            self.ctx.statusMessage.emit(f"已导出 {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def import_one(self) -> None:
+        row = self.list.currentRow()
+        if not self.pack or not self.palette or row < 0:
+            return
+        if Image is None:
+            QMessageBox.warning(self, "导入", "需要 Pillow")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "选择 PNG", "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            img = Image.open(path)
+            self.pack.replace_from_image(row, img, self.palette)
+            self.list.rebuild_items(self._labels())
+            self.list.setCurrentRow(row)
+            self._preview(row)
+            self.ctx.statusMessage.emit(f"已替换砖 {row}（记得保存砖库）")
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", str(e))
+
+    def append_one(self) -> None:
+        if not self.pack or not self.palette:
+            return
+        if Image is None:
+            QMessageBox.warning(self, "追加", "需要 Pillow")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "选择 PNG", "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            img = Image.open(path)
+            idx = self.pack.append_from_image(img, self.palette)
+            self.list.rebuild_items(self._labels())
+            self.list.setCurrentRow(idx)
+            self.ctx.statusMessage.emit(f"已追加砖 {idx}")
+        except Exception as e:
+            QMessageBox.critical(self, "追加失败", str(e))
+
+    def export_batch(self) -> None:
+        if not self.pack or not self.palette:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        if not folder:
+            return
+        out = Path(folder)
+        ok = fail = 0
+        for i in range(self.pack.count):
+            if not self.pack.tiles[i]:
+                continue
+            try:
+                self.pack.export_png(i, out / f"{self._kind}_{i:04d}.png", self.palette)
+                ok += 1
+            except Exception:
+                fail += 1
+        QMessageBox.information(self, "批量导出", f"成功 {ok}，失败/跳过 {fail}\n目录：{out}")
+
+    def import_batch(self) -> None:
+        if not self.pack or not self.palette:
+            return
+        if Image is None:
+            QMessageBox.warning(self, "导入", "需要 Pillow")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "选择含 PNG 的目录")
+        if not folder:
+            return
+        files = sorted(Path(folder).glob("*.png")) + sorted(Path(folder).glob("*.PNG"))
+        ok = skip = 0
+        errors: list[str] = []
+        for fp in files:
+            idx = parse_tile_filename(fp.name)
+            if idx is None:
+                skip += 1
+                continue
+            try:
+                img = Image.open(fp)
+                if idx >= self.pack.count:
+                    while self.pack.count <= idx:
+                        self.pack.append_raw(b"")
+                self.pack.replace_from_image(idx, img, self.palette)
+                ok += 1
+            except Exception as e:
+                errors.append(f"{fp.name}: {e}")
+        cur = self.list.currentRow()
+        self.list.rebuild_items(self._labels())
+        if 0 <= cur < self.list.count():
+            self.list.setCurrentRow(cur)
+        msg = f"导入 {ok} 张，跳过 {skip}"
+        if errors:
+            msg += "\n" + "\n".join(errors[:8])
+        QMessageBox.information(self, "批量导入", msg + "\n记得点「保存砖库」")
+
+    def save_pack(self) -> None:
+        if not self.pack:
+            return
+        try:
+            self.pack.save(backup=True)
+            QMessageBox.information(
+                self,
+                "保存",
+                f"已保存\n{self.pack.idx_path}\n{self.pack.grp_path}",
+            )
         except Exception as e:
             QMessageBox.critical(self, "失败", str(e))
 
@@ -136,7 +459,6 @@ class AssetEditorWidget(QWidget):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        # Quick open common packs
         quick = QWidget()
         qlay = QVBoxLayout(quick)
         row = QHBoxLayout()
@@ -162,7 +484,6 @@ class AssetEditorWidget(QWidget):
         self.items_panel = PicPackPanel(ctx, "Items")
         self.tabs.addTab(self.items_panel, "物品图")
 
-        # Fight actions
         fight = QWidget()
         flay = QFormLayout(fight)
         self.fight_head = QSpinBox(); self.fight_head.setRange(0, 999)
@@ -176,7 +497,6 @@ class AssetEditorWidget(QWidget):
         flay.addRow(self.fight_panel)
         self.tabs.addTab(fight, "战斗动作")
 
-        # EFT
         eft = QWidget()
         elay = QFormLayout(eft)
         self.eft_num = QSpinBox(); self.eft_num.setRange(0, 999)
@@ -191,27 +511,9 @@ class AssetEditorWidget(QWidget):
         elay.addRow(self.eft_panel)
         self.tabs.addTab(eft, "特效")
 
-        # RLE tiles
-        tile = QWidget()
-        tlay = QVBoxLayout(tile)
-        brow = QHBoxLayout()
-        open_smp = QPushButton("打开 smp/sdx")
-        open_smp.clicked.connect(self._open_smp)
-        brow.addWidget(open_smp)
-        tlay.addLayout(brow)
-        self.tile_list = QListWidget()
-        self.tile_list.currentRowChanged.connect(self._preview_tile)
-        tlay.addWidget(self.tile_list)
-        self.tile_preview = QLabel("砖预览")
-        self.tile_preview.setMinimumHeight(128)
-        self.tile_preview.setAlignment(Qt.AlignCenter)
-        self.tile_preview.setStyleSheet("background:#111;")
-        tlay.addWidget(self.tile_preview)
-        self.tabs.addTab(tile, "场景砖(RLE)")
-        self._tile_pack: RleTilePack | None = None
-        self._palette = None
+        self.rle_panel = RleTilePanel(ctx)
+        self.tabs.addTab(self.rle_panel, "RLE砖库(mmap/场景/战场)")
 
-        # Index linker
         link_tab = QWidget()
         llay = QFormLayout(link_tab)
         self.link_role = QSpinBox(); self.link_role.setRange(0, 999)
@@ -328,42 +630,6 @@ class AssetEditorWidget(QWidget):
         ami = self.ctx.ranger.magics.get(mid, 13)
         self.eft_num.setValue(ami)
         self._open_eft()
-
-    def _open_smp(self) -> None:
-        if not self.ctx.data_root:
-            return
-        res = self.ctx.resource_dir
-        idx = res / "sdx"
-        grp = res / "smp"
-        if not idx.is_file() or not grp.is_file():
-            QMessageBox.warning(self, "打开", "需要 resource/sdx 与 resource/smp")
-            return
-        pal_path = res / "MMAP.COL"
-        if not pal_path.is_file():
-            pal_path = res / "pallet.col"
-        try:
-            self._palette = load_palette(pal_path) if pal_path.is_file() else None
-            self._tile_pack = RleTilePack()
-            self._tile_pack.load(idx, grp)
-            self.tile_list.clear()
-            for i in range(self._tile_pack.count):
-                self.tile_list.addItem(str(i))
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
-    def _preview_tile(self, row: int) -> None:
-        if not self._tile_pack or not self._palette or row < 0:
-            return
-        try:
-            img = self._tile_pack.decode_tile(row, self._palette)
-            if img is None:
-                self.tile_preview.setText("无法解码")
-                return
-            self.tile_preview.setPixmap(
-                pil_to_pixmap(img).scaled(128, 128, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-        except Exception as e:
-            self.tile_preview.setText(str(e))
 
     def _apply_role_head(self) -> None:
         if not self.ctx.ranger:

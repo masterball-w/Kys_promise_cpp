@@ -1,6 +1,7 @@
 # Pascal 实现映射 (C++ 重构参考)
 
-本文档将 C++ 重构任务 (来自 `AI_TASK_PROMPTS.md`) 映射到 `kys-promise-main` 中的原始 Pascal 实现。请以此作为逻辑复刻的“唯一真实来源 (Source of Truth)”。
+> **进度真源已迁移：** 请优先查阅 [FEATURE_PORT_LIST.md](FEATURE_PORT_LIST.md) 与 [PROGRESS.md](PROGRESS.md)。  
+> 本文保留早期「任务→Pascal 符号」映射作辅参考；行号可能漂移，勿当作完成度清单。
 
 **项目原则**: 除非明确需要改进，否则逻辑必须严格复刻 Pascal 的行为。
 

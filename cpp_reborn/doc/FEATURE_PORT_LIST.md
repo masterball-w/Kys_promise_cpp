@@ -49,6 +49,7 @@
 | 项 | 说明 |
 |----|------|
 | Android | `scripts/verify_android_build.ps1` + [ANDROID.md](../../ANDROID.md) |
-| 音频 | Win MCI / Android WAV → 统一 SDL3 方案待做 |
+| 音频 | SDL3 设备已在 `GameManager::Init` 打开；Windows MCI 播 mid/mp3/ogg，双端 WAV 循环；音量走 `SDL_SetAudioStreamGain`。统一解码库仍待做 |
 | 输入 | `InputManager` 分批收敛阻塞 PollEvent |
 | CI | `.github/workflows/cpp_reborn_ci.yml` |
+| 开发接口 | [`GameHooks.h`](../include/GameHooks.h)：可替换音乐、音效、武功特效，并接收战斗结束 |

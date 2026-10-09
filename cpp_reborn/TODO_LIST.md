@@ -1,7 +1,8 @@
 # KYS-Promise 重构项目待办事项清单 (TODO List)
 
-**Last Updated:** 2026-07-28  
+**Last Updated:** 2026-08-07  
 **完整勾选进度:** [doc/PROGRESS.md](doc/PROGRESS.md)  
+**权威功能对照:** [doc/FEATURE_PORT_LIST.md](doc/FEATURE_PORT_LIST.md)  
 **状态摘要:** [PROJECT_STATUS.md](PROJECT_STATUS.md)  
 **Android 双端:** [../ANDROID.md](../ANDROID.md)  
 **制作器:** [../editor/README.md](../editor/README.md)  
@@ -62,9 +63,11 @@
 - [x] 见 §0 / 原 §1.1 清单
 
 ### 1.2 仍待验收 / 补齐
-- [x] **`instruct_50e`**：对齐 Pascal — case 0–5/8–12/16–52（含字符串、内存 poke/peek、SelectAim、绘制、Delay/random/菜单、动画/伤显/改名等）；剧本高频 code 已覆盖；未知 code 打日志 — **2026-07-21**
+- [ ] **opcode 7**：Pascal `CallEvent` 中 `7: break` 结束事件；C++ `ExecuteEvent` **无 case 7**（落入 default）— **高优先**（2026-08-07 源码核实）
+- [ ] **opcode 61**：Pascal 相对跳转 `i += e[i+1]; i += 3`；C++ **无 case 61** — **高优先**
+- [x] **`instruct_50e`**：对齐 Pascal — case 0–5/8–12/16–52（含字符串、内存 poke/peek、SelectAim、绘制、Delay/random/菜单、动画/伤显、改名等）；剧本高频 code 已覆盖；未知 code 打日志 — **2026-07-21**
 - [x] P1 冒烟：`test_50e` 单元测过；Kdef 抽样统计 code 43/4/3/26/25… 均有实现
-- [ ] opcode `61` / `65`：若剧本有引用再补；`57` 原版注释可跳过
+- [ ] opcode `65`：原版空走，可与 default 等价；`57` 原版注释可跳过
 - [ ] `instruct_43` 子功能边界用例（异常参数、与 `50e·43` 一致性）
 
 ### 1.3 小游戏保真

@@ -50,16 +50,26 @@ class SaveEditorWidget(QWidget):
 
         ctx.dataRootChanged.connect(lambda _: self.refresh())
         ctx.encodingChanged.connect(lambda _: self.refresh())
+        ctx.saveSlotChanged.connect(self._on_save_slot_changed)
+        ctx.saveSlotChanged.connect(lambda _: self.refresh())
 
     def _on_slot(self) -> None:
         slot = self.slot_combo.currentData()
         if slot is None or not self.ctx.data_root:
             return
         try:
-            self.ctx.load_save_slot(int(slot))
+            self.ctx.set_save_slot(int(slot))
             self.refresh()
         except Exception as e:
             QMessageBox.warning(self, "加载失败", str(e))
+
+    def _on_save_slot_changed(self, slot: int) -> None:
+        idx = self.slot_combo.findData(slot)
+        if idx >= 0 and self.slot_combo.currentIndex() != idx:
+            self.slot_combo.blockSignals(True)
+            self.slot_combo.setCurrentIndex(idx)
+            self.slot_combo.blockSignals(False)
+        self.refresh()
 
     def refresh(self) -> None:
         arc = self.ctx.ranger
@@ -72,8 +82,22 @@ class SaveEditorWidget(QWidget):
         self.sp_sx.setValue(h.sx)
         self.sp_sy.setValue(h.sy)
         self.sp_gametime.setValue(h.game_time)
+        prof = self.ctx.profile
+        team_n = prof.ranger_team_count if prof else 6
+        team_off = prof.ranger_team_offset if prof else 30
         for i, sp in enumerate(self.team_spins):
-            sp.setValue(h.team[i] if i < len(h.team) else -1)
+            vis = i < team_n
+            sp.setVisible(vis)
+            self._team_labels[i].setVisible(vis)
+            if vis:
+                self._team_labels[i].setText(f"Team[{i}] @byte{team_off + i * 2}")
+                sp.setValue(h.team[i] if i < len(h.team) else -1)
+        has_money = bool(prof and prof.ranger_has_money_word)
+        self._money_label.setVisible(has_money)
+        self.sp_money.setVisible(has_money)
+        if has_money and prof:
+            self._money_label.setText(f"银两 Money[byte {prof.ranger_money_offset}]")
+            self.sp_money.setValue(h.money)
 
         self.role_editor.refresh()
         self.item_editor.refresh()
@@ -121,10 +145,16 @@ class SaveEditorWidget(QWidget):
         form.addRow("Sy", self.sp_sy)
         form.addRow("gametime", self.sp_gametime)
         self.team_spins = []
-        for i in range(6):
+        self._team_labels: list[QLabel] = []
+        for i in range(8):
             sp = QSpinBox(); sp.setRange(-1, 999)
+            lbl = QLabel(f"Team[{i}]")
             self.team_spins.append(sp)
-            form.addRow(f"Team[{i}]", sp)
+            self._team_labels.append(lbl)
+            form.addRow(lbl, sp)
+        self.sp_money = QSpinBox(); self.sp_money.setRange(-32768, 32767)
+        self._money_label = QLabel("银两 Money[42]")
+        form.addRow(self._money_label, self.sp_money)
         apply = QPushButton("应用总览修改")
         apply.clicked.connect(self._apply_header)
         form.addRow(apply)
@@ -141,7 +171,13 @@ class SaveEditorWidget(QWidget):
         h.sx = self.sp_sx.value()
         h.sy = self.sp_sy.value()
         h.game_time = self.sp_gametime.value()
-        h.team = [sp.value() for sp in self.team_spins]
+        team_n = self.ctx.profile.ranger_team_count if self.ctx.profile else len(self.team_spins)
+        while len(h.team) < team_n:
+            h.team.append(-1)
+        for i in range(team_n):
+            h.team[i] = self.team_spins[i].value()
+        if self.ctx.profile and self.ctx.profile.ranger_has_money_word:
+            h.money = self.sp_money.value()
         self.ctx.statusMessage.emit("总览已应用到内存（请点保存）")
 
     def _build_roles_tab(self) -> None:

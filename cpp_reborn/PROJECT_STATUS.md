@@ -1,7 +1,8 @@
 # KYS C++ Refactoring Project Status
 
-**Last Updated:** 2026-07-28  
+**Last Updated:** 2026-08-07  
 **Status:** Alpha ~0.7 / Core Loop + Shop + Little Games + Gongti 26–28 + Dual-build scaffolding  
+**权威功能对照:** [doc/FEATURE_PORT_LIST.md](doc/FEATURE_PORT_LIST.md)（Pascal ↔ C++）  
 **详细对齐清单:** [doc/PROGRESS.md](doc/PROGRESS.md)（以 Pascal 函数为单元）  
 **待办与开发计划:** [TODO_LIST.md](TODO_LIST.md)  
 **开场/脚本101回归:** [doc/REGRESSION_SCRIPT_101.md](doc/REGRESSION_SCRIPT_101.md)  
@@ -60,10 +61,11 @@
 
 ## 2. Unfinished / Missing Features
 
-See **[TODO_LIST.md](TODO_LIST.md)** for the full checklist and phased plan (P0–P6). Headline gaps:
+See **[doc/FEATURE_PORT_LIST.md](doc/FEATURE_PORT_LIST.md)** and **[TODO_LIST.md](TODO_LIST.md)**. Headline gaps:
 
+- **Opcode 7 / 61** missing in `ExecuteEvent` (event end / relative jump).
 - Battle formula / range / VFX / AI fidelity vs `kys_battle.pas`.
-- `instruct_50e` exhaustive acceptance.
+- `instruct_50e` edge codes / rename UI / InputAmount.
 - Android real-device closed loop (data, confirm key, music, fonts).
 - `ShowMap`, pets UI, hotkeys, SetScene atmosphere.
 - Unified cross-platform music (beyond preconverted WAV); InputManager migration.

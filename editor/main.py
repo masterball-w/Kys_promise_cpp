@@ -121,6 +121,11 @@ class MainWindow(QMainWindow):
             profile = replace(
                 forced,
                 assets=detected.assets,
+                ranger_team_offset=detected.ranger_team_offset,
+                ranger_team_count=detected.ranger_team_count,
+                ranger_money_offset=detected.ranger_money_offset,
+                ranger_inventory_base=detected.ranger_inventory_base,
+                inventory_slots=detected.inventory_slots,
                 display_name=f"{forced.display_name}（字宽预设 + 贴图探测）",
             )
         self.ctx.set_data_root(path, profile=profile)

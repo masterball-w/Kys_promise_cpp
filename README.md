@@ -14,12 +14,13 @@
 |------|------|
 | SDL3 渲染 / `.pic` `.grp` `.idx` 解析 | 已实现 |
 | 大地图 / 场景漫游、碰撞与事件触发 | 已实现 |
-| 事件脚本解释器（核心指令） | 大部分可用（~90%） |
-| ESC 环形菜单、物品 / 武学 / 状态 / 系统 / 商店 UI | 已实现 |
-| 小游戏（作诗/针灸/射雕/拼图/黑白棋/贪吃蛇/推块） | 主路径已迁入，细节可打磨 |
-| 战斗（移动、武学、用毒医疗、物品、AI 基础） | Alpha，持续对照原版修正 |
-| 存档读写（`R/S/D/G*.grp`） | 已实现 |
-| 音频（音乐 / 音效） | 部分可用（Windows 侧重） |
+| 事件脚本解释器（核心指令） | 大部分可用；opcode 7 / 61 已对齐 |
+| ESC 环形菜单、物品 / 武学 / 状态 / 系统 / 商店 / 地图 / 宠物 | 已实现 |
+| 小游戏（作诗/针灸/射雕/拼图/黑白棋/贪吃蛇/推块） | 主路径已迁入 |
+| 战斗（移动、武学、用毒医疗、物品、敌我自动） | 主路径可用；伤害边界与特效仍在对照 |
+| 存档读写（`R/S/D/G*.grp`） | 已实现；slot0 不覆盖新游戏模板 |
+| 音频（音乐 / 音效） | 启动时打开 SDL 音频；Windows 可播 mid/mp3/ogg，安卓需 WAV |
+| 制作器 | 大地图批量编辑、入口标注、RLE 缩略图与导入导出 |
 
 对照参考源码仍保留在仓库根目录：`kys_*.pas`、`kys_promise.dpr` 等。
 
@@ -91,10 +92,15 @@ build/Debug/kys_cpp.exe
 **重要：** 原版 `resource/` / `save/` / `fight/` 等资源请放在仓库根目录 `game_data/`，再用脚本链到运行目录。不要只放在 `build/` 里——清理构建目录会删掉它们。
 
 ```powershell
-# 首次：把合法取得的资源拷到 game_data/{resource,save,fight,eft,list,music,sound}
-# 然后：
+# 推荐：从本机前传发行目录一键同步到 game_data/ 并打包 + 链接
+powershell -ExecutionPolicy Bypass -File scripts/pack_promise_game_data.ps1
+
+# 或手动拷贝资源后：
 powershell -ExecutionPolicy Bypass -File scripts/link_game_data.ps1 -Config Debug
+powershell -ExecutionPolicy Bypass -File scripts/verify_game_data.ps1
 ```
+
+完整说明见 [GAME_DATA.md](GAME_DATA.md)。
 
 ---
 
@@ -214,12 +220,24 @@ powershell -ExecutionPolicy Bypass -File scripts/push_game_data_android.ps1
 
 ---
 
+## 近期更新
+
+- 启动时初始化音频设备。设备不可用时游戏继续运行。Windows 用 MCI 播放 mid/mp3/ogg，安卓与 Linux 循环播放 `music/N.wav`，音量同时作用到 SDL 音频流。
+- 武功 `.eft` 帧间延时按原版 `GameSpeed` 计算，播放时处理系统事件，避免窗口无响应。
+- 预留 [`cpp_reborn/include/GameHooks.h`](cpp_reborn/include/GameHooks.h)：可替换音乐、音效、武功特效，并在战斗结束时收到编号与胜负。
+- 制作器支持大地图贴图/建筑层框选复制粘贴、场景入口标注，以及 mmap/场景砖/战场砖的缩略图和 PNG 导入导出。
+- 资源整理脚本：`scripts/pack_promise_game_data.ps1`、`scripts/verify_game_data.ps1`。布局见 [GAME_DATA.md](GAME_DATA.md)。
+- 功能对照与优先级：`cpp_reborn/doc/FEATURE_PORT_LIST.md`、`cpp_reborn/doc/PRIORITY_TASK_LIST.md`。
+
 ## 开发说明
 
 - 语言标准：C++17（以 `cpp_reborn/CMakeLists.txt` 为准）
 - 多媒体：SDL3、SDL3_image、SDL3_ttf；可选 SDL2_mixer（`USE_SDL2_MIXER`）
 - 逻辑对照：优先对齐 `kys_battle.pas`、`kys_event.pas`、`kys_engine.pas`、`kys_main.pas`
-- 进度清单（Pascal 对齐单元）见 `cpp_reborn/doc/PROGRESS.md`；摘要见 `cpp_reborn/PROJECT_STATUS.md` 与 `cpp_reborn/TODO_LIST.md`
+- **功能对照 list：** `cpp_reborn/doc/FEATURE_PORT_LIST.md`
+- **未完成优先级：** `cpp_reborn/doc/PRIORITY_TASK_LIST.md`
+- 单元勾选进度：`cpp_reborn/doc/PROGRESS.md`；摘要：`cpp_reborn/PROJECT_STATUS.md`、`cpp_reborn/TODO_LIST.md`
+- 资源布局：`GAME_DATA.md`
 
 ---
 

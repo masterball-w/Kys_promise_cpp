@@ -30,6 +30,9 @@ def _pick_data_root() -> Path | None:
     legacy = ROOT / "game_data"
     if (legacy / "save").is_dir() and (legacy / "resource").is_dir():
         return legacy
+    awaken = EDITOR / "kys-awaken"
+    if (awaken / "save").is_dir() and (awaken / "resource").is_dir():
+        return awaken
     return None
 
 
@@ -111,6 +114,71 @@ def test_collect_scene_entrances():
     # Scene 0 (开场卧室所属场景) usually has a mapped entrance on the big map
     scene0 = [e for e in ents if e.scene_id == 0]
     assert scene0, "scene 0 should expose MainEntrance on big map"
+
+
+def test_rle_encode_roundtrip_opaque_count():
+    from kys_formats.rle_tile import (
+        RleTilePack,
+        load_palette,
+        find_palette,
+        encode_tile_image,
+        parse_tile_filename,
+    )
+
+    if not RES:
+        pytest.skip("no resource")
+    pal_path = find_palette(RES)
+    if not pal_path:
+        pytest.skip("no palette")
+    idx = RES / "mmap.idx"
+    grp = RES / "mmap.grp"
+    if not idx.is_file():
+        pytest.skip("no mmap")
+    pal = load_palette(pal_path)
+    pack = RleTilePack()
+    pack.load(idx, grp)
+    ti = next((i for i, t in enumerate(pack.tiles) if len(t) >= 8), None)
+    if ti is None:
+        pytest.skip("empty mmap")
+    img = pack.decode_tile(ti, pal, use_cache=False)
+    assert img is not None
+    xs, ys = pack.get_hotspot(ti)
+    block = encode_tile_image(img, pal, xs=xs, ys=ys)
+    pack2 = RleTilePack()
+    pack2.tiles = [block]
+    img2 = pack2.decode_tile(0, pal, use_cache=False)
+    assert img2 is not None
+    assert img2.size == img.size
+
+    def opaque(im):
+        return sum(1 for p in im.getdata() if p[3] >= 128)
+
+    assert opaque(img2) == opaque(img)
+    assert parse_tile_filename("mmap_0012.png") == 12
+    assert parse_tile_filename("12.png") == 12
+
+
+def test_world_layer_copy_paste(tmp_path):
+    from kys_formats.world_map import WorldLayerGrid, export_layer_region_json, load_layer_region_json
+
+    g = WorldLayerGrid()
+    g.size = 8
+    g.grid = [[0] * 8 for _ in range(8)]
+    g.set(1, 2, 100)
+    g.set(2, 3, 200)
+    data = g.copy_rect(1, 2, 2, 3)
+    assert data[0][0] == 100
+    g2 = WorldLayerGrid()
+    g2.size = 8
+    g2.grid = [[-1] * 8 for _ in range(8)]
+    n = g2.paste_rect(0, 0, data)
+    assert n == 4
+    assert g2.get(0, 0) == 100
+    payload = export_layer_region_json("earth", g, 1, 2, 2, 3)
+    p = tmp_path / "r.json"
+    p.write_text(__import__("json").dumps(payload), encoding="utf-8")
+    loaded = load_layer_region_json(p)
+    assert loaded["width"] == 2
 
 
 def test_war_roundtrip():
@@ -204,6 +272,112 @@ def test_talk_decode():
     assert talk.count > 100
     t = talk.get_text(1)
     assert isinstance(t, str)
+
+
+def test_event_rollback_collect_modify():
+    from kys_formats.kdef import KdefArchive, Script, Instruction
+    from kys_formats.event_rollback import collect_related_rollback_targets
+    from kys_formats.scene_data import SceneEventData
+
+    kdef = KdefArchive.__new__(KdefArchive)
+    kdef.offsets = [0, 20]
+    script = Script(
+        1,
+        instructions=[
+            Instruction(3, [49, 1, 0, 1, -1, 0, 0, -1, -1, -1, -2, -2, -2], 0),
+            Instruction(-1, [], 14),
+        ],
+    )
+
+    def fake_get(sid):
+        assert sid == 1
+        return script
+
+    kdef.get_script = fake_get  # type: ignore[method-assign]
+
+    events = SceneEventData()
+    events.scenes = [[[0] * 11 for _ in range(200)]]
+    events.scenes[0][5][2] = 1
+    targets, scripts = collect_related_rollback_targets(kdef, 0, 5, events)
+    assert (0, 5) in targets
+    assert (49, 1) in targets
+    assert 1 in scripts
+
+
+def _kys_awaken_root() -> Path | None:
+    for root in (
+        EDITOR / "kys-awaken",
+        Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken"),
+    ):
+        if (root / "save" / "r1.grp").is_file() or (root / "save" / "R1.grp").is_file():
+            return root
+    return None
+
+
+def test_probe_ranger_header_tlbb_mod():
+    from kys_formats.ranger_header import probe_ranger_header_layout
+
+    root = _kys_awaken_root()
+    if not root:
+        pytest.skip("kys-awaken r1.grp not present")
+    grp = (root / "save" / "R1.grp").read_bytes()
+    lay = probe_ranger_header_layout(836, 68, grp[:836], role_count=128)
+    assert lay.team_offset == 24
+    assert lay.team_count == 6
+    assert lay.inventory_base == 44
+    assert lay.money_offset == 42
+
+
+def test_ranger_team_tlbb_mod():
+    from kys_formats.profile import detect_profile
+    from kys_formats.ranger import RangerArchive, RangerLayout
+
+    root = _kys_awaken_root()
+    if not root:
+        pytest.skip("kys-awaken data not present")
+    profile = detect_profile(root)
+    assert profile.ranger_team_offset == 24
+    assert profile.ranger_team_count == 6
+    assert profile.ranger_inventory_base == 44
+    arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.text_encoding = "big5"
+    arc.load(root / "save", 1)
+    assert len(arc.header.team) == 6
+    # Team[0..3] at bytes 24..30 — matches in-game party strip for save slot 1.
+    assert arc.header.team[0] == 0
+    assert arc.header.team[1] == -1
+    assert arc.header.team[2] == 0
+    assert arc.header.team[3] == 0
+    assert arc.role_name(0)  # protagonist present
+
+
+def test_ranger_roundtrip_tlbb_mod():
+    from kys_formats.profile import detect_profile
+    from kys_formats.ranger import RangerArchive, RangerLayout
+
+    root = _kys_awaken_root()
+    if not root:
+        pytest.skip("kys-awaken data not present")
+    profile = detect_profile(root)
+    arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.load(root / "save", 1)
+    raw = (root / "save" / "R1.grp").read_bytes()
+    rebuilt = arc.to_bytes()
+    assert rebuilt == raw
+
+
+def test_event_progress_flag():
+    from kys_formats.event_progress import event_progress_flag, event_runtime_changed
+    from kys_formats.scene_data import SceneEventData
+
+    tpl = SceneEventData()
+    cur = SceneEventData()
+    tpl.scenes = [[[1, 0, 10, 0, 0, 100, 0, 100, 0, 5, 5]]]
+    cur.scenes = [[[0, 0, 10, 0, 0, 100, 0, 100, 0, 5, 5]]]
+    assert event_runtime_changed(tpl.scenes[0][0], cur.scenes[0][0])
+    assert event_progress_flag(tpl, cur, 0, 0) == 1
+    cur.scenes[0][0][0] = 1
+    assert event_progress_flag(tpl, cur, 0, 0) == 0
 
 
 def test_craft_fields_present():

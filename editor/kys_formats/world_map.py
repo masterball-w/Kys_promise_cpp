@@ -6,6 +6,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
+import json
 
 from .backup import atomic_write, backup_file
 
@@ -106,6 +107,87 @@ class WorldLayerGrid:
         if backup:
             backup_file(self.path)
         atomic_write(self.path, self.to_bytes())
+
+    def copy_rect(self, x0: int, y0: int, x1: int, y1: int) -> List[List[int]]:
+        """Inclusive rectangle → [dx][dy] codes (engine axes)."""
+        xa, xb = sorted((int(x0), int(x1)))
+        ya, yb = sorted((int(y0), int(y1)))
+        out: List[List[int]] = []
+        for x in range(xa, xb + 1):
+            col = []
+            for y in range(ya, yb + 1):
+                if 0 <= x < self.size and 0 <= y < self.size:
+                    col.append(self.get(x, y))
+                else:
+                    col.append(-1)
+            out.append(col)
+        return out
+
+    def paste_rect(
+        self,
+        x0: int,
+        y0: int,
+        data: List[List[int]],
+        *,
+        skip_negative: bool = False,
+    ) -> int:
+        """Paste [dx][dy] at engine (x0,y0). Returns cells written."""
+        written = 0
+        for dx, col in enumerate(data):
+            for dy, val in enumerate(col):
+                if skip_negative and int(val) < 0:
+                    continue
+                x, y = x0 + dx, y0 + dy
+                if 0 <= x < self.size and 0 <= y < self.size:
+                    self.set(x, y, int(val))
+                    written += 1
+        return written
+
+    def fill_rect(self, x0: int, y0: int, x1: int, y1: int, value: int) -> int:
+        xa, xb = sorted((int(x0), int(x1)))
+        ya, yb = sorted((int(y0), int(y1)))
+        n = 0
+        for x in range(xa, xb + 1):
+            for y in range(ya, yb + 1):
+                if 0 <= x < self.size and 0 <= y < self.size:
+                    self.set(x, y, int(value))
+                    n += 1
+        return n
+
+
+def export_layer_region_json(
+    layer_key: str,
+    grid: WorldLayerGrid,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> dict:
+    xa, xb = sorted((int(x0), int(x1)))
+    ya, yb = sorted((int(y0), int(y1)))
+    data = grid.copy_rect(xa, ya, xb, yb)
+    return {
+        "format": "kys_world_layer_region_v1",
+        "layer": layer_key,
+        "x0": xa,
+        "y0": ya,
+        "x1": xb,
+        "y1": yb,
+        "width": xb - xa + 1,
+        "height": yb - ya + 1,
+        "data": data,
+    }
+
+
+def save_layer_region_json(path: str | Path, payload: dict) -> None:
+    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_layer_region_json(path: str | Path) -> dict:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or "data" not in payload:
+        raise ValueError("invalid region json")
+    return payload
 
 
 class WorldMapBundle:

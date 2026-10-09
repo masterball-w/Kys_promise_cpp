@@ -21,7 +21,6 @@ from .profile import (
     detect_profile,
     PROFILE_PROMISE,
     PROFILE_CLASSIC,
-    PROFILE_GODSDEVILS,
 )
 from .assets import load_heads_bank, load_items_bank
 
@@ -49,7 +48,6 @@ __all__ = [
     "detect_profile",
     "PROFILE_PROMISE",
     "PROFILE_CLASSIC",
-    "PROFILE_GODSDEVILS",
     "load_heads_bank",
     "load_items_bank",
 ]

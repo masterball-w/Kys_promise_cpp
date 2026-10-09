@@ -1,5 +1,6 @@
 #include "SoundManager.h"
 #include "FileLoader.h"
+#include "GameHooks.h"
 #include <iostream>
 #include <algorithm>
 #include <cstdio>
@@ -112,6 +113,7 @@ bool SoundManager::playWavMusic(const std::string& fullPath) {
     }
     SDL_FlushAudioStream(stream);
     SDL_BindAudioStream(m_deviceId, stream);
+    SDL_SetAudioStreamGain(stream, m_musicVolumeLevel / 8.0f);
 
     m_musicStream = stream;
     m_musicBuffer = buffer;
@@ -123,6 +125,10 @@ bool SoundManager::playWavMusic(const std::string& fullPath) {
 
 void SoundManager::PlayMusic(int musicId) {
     if (m_currentMusicId == musicId) return;
+    if (GameHooks::tryPlayMusic(musicId)) {
+        m_currentMusicId = musicId;
+        return;
+    }
 
     StopMusic();
     m_currentMusicId = musicId;
@@ -222,9 +228,13 @@ void SoundManager::SetMusicVolumeLevel(int level) {
     std::string cmd = "setaudio bgm volume to " + std::to_string(volume);
     mciSendStringA(cmd.c_str(), NULL, 0, NULL);
 #endif
+    if (m_musicStream) {
+        SDL_SetAudioStreamGain(m_musicStream, m_musicVolumeLevel / 8.0f);
+    }
 }
 
 void SoundManager::PlaySound(int soundId) {
+    if (GameHooks::tryPlaySound(soundId)) return;
     if (m_deviceId == 0) return;
 
     AudioData* data = nullptr;
@@ -264,6 +274,7 @@ void SoundManager::PlaySound(int soundId) {
         SDL_AudioStream* stream = SDL_CreateAudioStream(&data->spec, &deviceSpec);
         if (stream) {
             if (SDL_PutAudioStreamData(stream, data->buffer, static_cast<int>(data->length))) {
+                 SDL_SetAudioStreamGain(stream, m_musicVolumeLevel / 8.0f);
                  SDL_FlushAudioStream(stream);
                  SDL_BindAudioStream(m_deviceId, stream);
                  m_activeStreams.push_back(stream);

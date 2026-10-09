@@ -24,6 +24,21 @@ class SceneEventData:
         self.path: Optional[Path] = None
         self.scenes: List[List[List[int]]] = []  # [scene][event][word]
 
+    @staticmethod
+    def resolve_path(save_dir: Path, slot: int) -> Path:
+        save_dir = Path(save_dir)
+        if slot <= 0:
+            for name in ("alldef.grp", "Alldef.grp"):
+                p = save_dir / name
+                if p.is_file():
+                    return p
+            return save_dir / "alldef.grp"
+        for name in (f"D{slot}.grp", f"d{slot}.grp"):
+            p = save_dir / name
+            if p.is_file():
+                return p
+        raise FileNotFoundError(f"D{slot}.grp not found in {save_dir}")
+
     @property
     def scene_count(self) -> int:
         return len(self.scenes)
@@ -80,6 +95,21 @@ class SceneMapData:
         self.path: Optional[Path] = None
         # [scene][layer][x][y]
         self.maps: List[List[List[List[int]]]] = []
+
+    @staticmethod
+    def resolve_path(save_dir: Path, slot: int) -> Path:
+        save_dir = Path(save_dir)
+        if slot <= 0:
+            for name in ("allsin.grp", "Allsin.grp"):
+                p = save_dir / name
+                if p.is_file():
+                    return p
+            return save_dir / "allsin.grp"
+        for name in (f"S{slot}.grp", f"s{slot}.grp"):
+            p = save_dir / name
+            if p.is_file():
+                return p
+        raise FileNotFoundError(f"S{slot}.grp not found in {save_dir}")
 
     @property
     def scene_count(self) -> int:

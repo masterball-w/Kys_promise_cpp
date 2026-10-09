@@ -11,6 +11,7 @@
 #include "GameTypes.h"
 #include "BattleEffects.h"
 #include "InputManager.h"
+#include "GameHooks.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <iostream>
@@ -721,6 +722,7 @@ selection_done:
 
 bool BattleManager::StartBattle(int battleId, int getExp) {
     m_getExp = getExp;
+    m_battleId = battleId;
     std::cout << "Starting Battle: " << battleId << " GetExp: " << getExp << std::endl;
     ClearBattleIdlePicCache();
     
@@ -1717,6 +1719,7 @@ void BattleManager::RunBattle() {
     }
 
     RestoreRoleStatus();
+    GameHooks::notifyBattleEnd(m_battleId, m_battleResult);
 
     std::string resultText = (m_battleResult == 1) ? " 戰鬥勝利" : " 戰鬥失敗";
     UIManager::getInstance().ShowDialogue(resultText, -1, 0);
@@ -4576,7 +4579,15 @@ void BattleManager::PlayEffectAmination(int bigami, int amiNum, int targetX, int
             restored = true;
         }
     }
+    const int gameSpeed = std::max(1, GameManager::getInstance().getGameSpeed());
     for (int i = 0; i < count; ++i) {
+        SDL_PumpEvents();
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT) {
+                m_battleRunning = false;
+            }
+        }
         PicImage pic = PicLoader::loadPic(path, i);
         if (!pic.surface) continue;
         RenderBattle();
@@ -4595,7 +4606,7 @@ void BattleManager::PlayEffectAmination(int bigami, int amiNum, int targetX, int
             int n = 300 - drawn * 3;
             if (pic.surface->w > 120 || pic.surface->h > 120) n -= 5;
             n /= 10;
-            if (n > 0) SDL_Delay(n);
+            if (n > 0) SDL_Delay((n * gameSpeed) / 10);
         } else {
             if (targetX >= 0 && targetX < 64 && targetY >= 0 && targetY < 64) {
                 int drawX, drawY;
@@ -4603,8 +4614,7 @@ void BattleManager::PlayEffectAmination(int bigami, int amiNum, int targetX, int
                 BlitPicToScreen(pic, drawX, drawY);
             }
             int n = 30 + (pic.black - 1) * 10;
-            int delay = n + 5;
-            if (delay > 0) SDL_Delay(delay);
+            SDL_Delay(((n + 5) * gameSpeed) / 10);
         }
         GameManager::getInstance().RenderScreenTo(renderer);
         UIManager::getInstance().UpdateScreen();
@@ -4618,6 +4628,7 @@ void BattleManager::PlayEffectAmination(int bigami, int amiNum, int targetX, int
 void BattleManager::PlayMagicAmination(int bnum, int magicId, int level, int targetX, int targetY) {
     if (bnum < 0 || bnum >= m_battleRoles.size()) return;
     if (magicId < 0) return;
+    if (GameHooks::tryPlayMagicEffect(bnum, magicId, level, targetX, targetY)) return;
     Magic& magic = GameManager::getInstance().getMagic(magicId);
     int bigami = magic.getBigAmi();
     int amiNum = magic.getAmiNum();

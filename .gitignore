@@ -17,6 +17,7 @@ cursor/
 
 # Local original game assets (copyrighted). NEVER store only under build/.
 /game_data/
+/dist/
 
 # Only ignore VS layout folders at repo root / under cpp_reborn (do NOT ignore SDL*/lib/x64)
 /[Dd]ebug/

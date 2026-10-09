@@ -119,6 +119,8 @@ Android / Linux 当前走 SDL3 WAV 循环，请预先转换：
 powershell -ExecutionPolicy Bypass -File scripts/convert_music_to_wav.ps1
 ```
 
+音频设备打开失败时游戏仍会启动（无声），不会因此退出。替换播放实现请用 `cpp_reborn/include/GameHooks.h`。
+
 ## 触控与返回键
 
 - **屏幕虚拟按键**（Android 默认开启；桌面设环境变量 `KYS_VIRTUAL_PAD=1`）：

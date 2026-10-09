@@ -28,6 +28,7 @@ class EditorContext(QObject):
     dataRootChanged = Signal(str)
     encodingChanged = Signal(str)
     profileChanged = Signal(str)
+    saveSlotChanged = Signal(int)
     statusMessage = Signal(str)
 
     def __init__(self) -> None:
@@ -40,6 +41,8 @@ class EditorContext(QObject):
         self.text_encoding: str = "auto"
         self.events: Optional[SceneEventData] = None
         self.maps: Optional[SceneMapData] = None
+        self.event_template: Optional[SceneEventData] = None
+        self.map_template: Optional[SceneMapData] = None
         self.kdef: Optional[KdefArchive] = None
         self.talk: Optional[TalkArchive] = None
         self.names: Optional[NameArchive] = None
@@ -126,16 +129,18 @@ class EditorContext(QObject):
             )
 
         try:
-            self.events = SceneEventData()
-            self.events.load(self.save_dir / "alldef.grp")
+            self.event_template = SceneEventData()
+            self.event_template.load(SceneEventData.resolve_path(self.save_dir, 0))
         except Exception:
-            self.events = None
+            self.event_template = None
 
         try:
-            self.maps = SceneMapData()
-            self.maps.load(self.save_dir / "allsin.grp")
+            self.map_template = SceneMapData()
+            self.map_template.load(SceneMapData.resolve_path(self.save_dir, 0))
         except Exception:
-            self.maps = None
+            self.map_template = None
+
+        self._load_scene_progress(self.save_slot)
 
         try:
             self.kdef = KdefArchive()
@@ -218,12 +223,55 @@ class EditorContext(QObject):
             self.world_map = None
 
         self.apply_text_encoding()
+        self.saveSlotChanged.emit(self.save_slot)
+
+    def _load_scene_progress(self, slot: int) -> None:
+        """Load DData/SData for save slot (0 = template alldef/allsin)."""
+        try:
+            self.events = SceneEventData()
+            self.events.load(SceneEventData.resolve_path(self.save_dir, slot))
+        except Exception as e:
+            self.events = None
+            if slot > 0:
+                self.statusMessage.emit(f"DData load error (slot {slot}): {e}")
+
+        try:
+            self.maps = SceneMapData()
+            self.maps.load(SceneMapData.resolve_path(self.save_dir, slot))
+        except Exception as e:
+            self.maps = None
+            if slot > 0:
+                self.statusMessage.emit(f"SData load error (slot {slot}): {e}")
 
     def load_save_slot(self, slot: int) -> None:
+        """Load ranger + per-slot DData/SData (alias for set_save_slot)."""
+        self.set_save_slot(slot)
+
+    def set_save_slot(self, slot: int) -> None:
+        """Switch active save slot; reload ranger and D{n}/S{n} progress files."""
+        slot = int(slot)
         self.save_slot = slot
         if not self.data_root:
+            self.saveSlotChanged.emit(slot)
             return
-        self.ranger = RangerArchive(self._ranger_layout())
-        self.ranger.load(self.save_dir, slot)
+
+        lay = self._ranger_layout()
+        try:
+            self.ranger = RangerArchive(lay)
+            self.ranger.load(self.save_dir, slot)
+        except Exception as e:
+            self.ranger = None
+            self.statusMessage.emit(f"Save load error (slot {slot}): {e}")
+
+        self._load_scene_progress(slot)
         self.apply_text_encoding()
-        self.statusMessage.emit(f"Loaded save slot {slot}")
+        dname, sname = self.progress_filenames()
+        self.statusMessage.emit(
+            f"存档槽 {slot} · 剧情进度 {dname} + {sname}"
+        )
+        self.saveSlotChanged.emit(slot)
+
+    def progress_filenames(self) -> tuple[str, str]:
+        from kys_formats.event_progress import progress_file_labels
+
+        return progress_file_labels(self.save_slot)
