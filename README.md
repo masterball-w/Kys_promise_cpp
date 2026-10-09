@@ -238,6 +238,7 @@ powershell -ExecutionPolicy Bypass -File scripts/push_game_data_android.ps1
 - **未完成优先级：** `cpp_reborn/doc/PRIORITY_TASK_LIST.md`
 - 单元勾选进度：`cpp_reborn/doc/PROGRESS.md`；摘要：`cpp_reborn/PROJECT_STATUS.md`、`cpp_reborn/TODO_LIST.md`
 - 资源布局：`GAME_DATA.md`
+- 加剧情：用项目技能 `.cursor/skills/add-kys-story/`。只改 `kdef`、对话和地图挂接，不要在 C++ 里写死单段剧情。
 
 ---
 
